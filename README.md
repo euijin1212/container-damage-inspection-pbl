@@ -28,26 +28,31 @@ container-damage-inspection-pbl/
 │  ├─ architecture.md                # AWS 전체 아키텍처 정리
 │  └─ data-schema.md                 # DynamoDB JSON 구조 정리
 │
-├─ edge-yolo/                        # 로컬 YOLO 1차 파손 판단
+├─ edge-yolo/                        # 로컬 YOLO 1차 파손 판단 (Layer 1)
 │  ├─ infer.py                       # YOLO로 이미지 추론, bbox/confidence 출력
 │  ├─ upload_to_s3.py                # 파손 의심 이미지와 결과 JSON을 S3로 업로드
 │  ├─ config.py                      # threshold, bucket name, prefix 등 설정
-│  ├─ weights/                       # YOLO 모델 가중치, GitHub 업로드 X
-│  ├─ input_images/                  # 테스트용 원본 컨테이너 이미지, GitHub 업로드 X 가능
+│  ├─ weights/                       # YOLO 모델 가중치 (GitHub 업로드 X)
+│  ├─ input_images/                  # 테스트용 원본 컨테이너 이미지 (업로드 X)
 │  ├─ output_results/                # YOLO 추론 결과 JSON, bbox 시각화 결과
 │  └─ sample_events/                 # 테스트용 edge 결과 JSON
 │
-├─ lambda/                           # AWS Lambda 코드
-│  ├─ image_processor/               # S3 이미지 업로드 후 실행되는 Lambda
-│  │  └─ handler.py                  # S3 metadata, YOLO 결과, Foundation Model 결과 통합 후 DynamoDB 저장
-│  │
+├─ lambda/                           # AWS Lambda 코드 (Layer 2)
+│  ├─ container-damage-analyzer/     # S3 이미지 업로드 후 실행되는 Lambda
+│  │  └─ lambda_handler.py           # S3 metadata + YOLO 결과 + FM 결과 통합 → DynamoDB 저장
 │  ├─ dashboard_api/                 # 대시보드 API Lambda
 │  │  └─ handler.py                  # 검수 큐 조회, 승인/수정/반려 처리
-│  │
 │  └─ report_generator/              # 보고서 생성 Lambda
-│     └─ handler.py                  # 검수 완료된 파손 건에 대해 Bedrock 보고서 생성
+│     └─ handler.py                  # 검수 완료 파손 건에 대해 Bedrock 보고서 생성
 │
-├─ dashboard/                        # 검수자 대시보드
+├─ src/                              # 클라우드 공유 분석 라이브러리 (analyzer Lambda·노트북이 사용)
+│  ├─ bedrock_analyzer.py            # Bedrock 비전 모델로 손상 유형/정도 판정
+│  ├─ risk_score.py                  # Risk Score 계산 (구멍 ≥ 찌그러짐 > 녹슴)
+│  ├─ s3_client.py                   # S3 이미지 조회/다운로드
+│  ├─ config.py                      # 리전/버킷/모델ID/가중치/임계값 설정
+│  └─ pipeline.py                    # S3→분석→스코어 배치 파이프라인 (CLI/노트북)
+│
+├─ dashboard/                        # 검수자 대시보드 (Layer 3)
 │  └─ README.md                      # 대시보드 실행 방법, 화면 구성 정리
 │
 ├─ mock-data/                        # 팀원 간 JSON 필드명 통일용 샘플
@@ -55,10 +60,16 @@ container-damage-inspection-pbl/
 │  ├─ sample_cloud_result.json       # Foundation Model 분석 결과 예시
 │  └─ sample_dynamodb_item.json      # DynamoDB 최종 저장 item 예시
 │
-└─ infra/                            # AWS 리소스 설정 메모
-   └─ aws-resources.md               # S3, DynamoDB, Lambda, Bedrock 리소스 이름 정리
+├─ infra/                            # AWS 리소스 설정 메모
+│  └─ aws-resources.md               # S3, DynamoDB, Lambda, Bedrock 리소스 이름 정리
+│
+│
+├─ container_risk_analysis.ipynb     # 개발/검증용 노트북 (S3→분석→스코어)
+├─ build_lambda.ps1                  # analyzer Lambda 배포 zip 생성 스크립트
+├─ template.yaml                     # SAM IaC (Lambda+S3트리거+DynamoDB+SNS)
+├─ requirements.txt                  # 파이썬 의존성
+└─ .env.example                      # 환경변수 템플릿
 ```
-
 ---
 
 ## 3. JSON 데이터 흐름
