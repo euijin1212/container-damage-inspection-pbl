@@ -63,6 +63,7 @@ S3에 이미지가 업로드되면 실행되어, 이미지를 Bedrock으로 보�
   * `s3:GetObject` (트리거 버킷 읽기)
   * `bedrock:InvokeModel` (AI 모델 호출)
   * `dynamodb:PutItem` (테이블 쓰기)
+  * `sns:Publish` (고위험 알림 발송)
 
 ---
 
@@ -73,3 +74,21 @@ S3에 이미지가 업로드되면 실행되어, 이미지를 Bedrock으로 보�
 * **사용 모델:** Claude Sonnet 4.5
 * **모델 ID:** `apac.anthropic.claude-sonnet-4-5-20250929-v1:0`
 * 💡 **사전 준비:** AWS 콘솔의 **[Bedrock -> Model access]** 메뉴에서 해당 모델에 대한 사용 권한을 미리 요청하고 활성화해야 API 호출이 가능합니다.
+
+---
+
+## 5. Amazon SNS (알림)
+
+Risk Score 가 임계 등급(`RISK_ALERT_LEVEL`, 기본 `HIGH`) 이상일 때 관리자에게 이메일 알림을 발송합니다.
+
+* **토픽명:** `container-damage-alert` (가칭)
+* **구독:** 이메일 프로토콜 → 구독 후 메일함에서 **Confirm** 필수
+* **발송 주체:** Analyzer Lambda (`SNS_TOPIC_ARN` 환경변수로 지정)
+
+---
+
+## 6. Amazon CloudWatch (모니터링)
+
+* Lambda 실행 로그 그룹: `/aws/lambda/container-damage-analyzer`
+* 확인 포인트: `[분석완료] ... → HIGH (score=...)` 로그, 에러/타임아웃, 처리 지연
+* 로그 그룹은 함수가 **최초 실행될 때 자동 생성**된다(미실행 시 "로그 그룹 없음"은 정상).

@@ -23,12 +23,15 @@
 container-damage-inspection-pbl/
 ├─ README.md                         # 프로젝트 폴더 구조와 JSON 필드 통일 문서
 ├─ .gitignore                        # AWS 키, 모델 가중치, 환경변수 제외 설정
+├─ .env.example                      # 환경변수 템플릿
+├─ requirements.txt                  # 파이썬 의존성 (boto3 등)
+├─ build_lambda.ps1                  # analyzer Lambda 배포 zip 생성 스크립트
 │
 ├─ docs/                             # 설계 문서
 │  ├─ architecture.md                # AWS 전체 아키텍처 정리
 │  └─ data-schema.md                 # DynamoDB JSON 구조 정리
 │
-├─ edge-yolo/                        # 로컬 YOLO 1차 파손 판단 (Layer 1)
+├─ edge-yolo/                        # 로컬 YOLO 1차 파손 판단 (Layer 1, 이준수)
 │  ├─ infer.py                       # YOLO로 이미지 추론, bbox/confidence 출력
 │  ├─ upload_to_s3.py                # 파손 의심 이미지와 결과 JSON을 S3로 업로드
 │  ├─ config.py                      # threshold, bucket name, prefix 등 설정
@@ -38,21 +41,23 @@ container-damage-inspection-pbl/
 │  └─ sample_events/                 # 테스트용 edge 결과 JSON
 │
 ├─ lambda/                           # AWS Lambda 코드 (Layer 2)
-│  ├─ container-damage-analyzer/     # S3 이미지 업로드 후 실행되는 Lambda
-│  │  └─ lambda_handler.py           # S3 metadata + YOLO 결과 + FM 결과 통합 → DynamoDB 저장
-│  ├─ dashboard_api/                 # 대시보드 API Lambda
-│  │  └─ handler.py                  # 검수 큐 조회, 승인/수정/반려 처리
-│  └─ report_generator/              # 보고서 생성 Lambda
-│     └─ handler.py                  # 검수 완료 파손 건에 대해 Bedrock 보고서 생성
+│  ├─ container-damage-analyzer/     # ★ S3 업로드 시 실행되는 실시간 분석 Lambda (구현 완료)
+│  │  └─ lambda_handler.py           # S3 이미지 → FM 분석 → Risk Score → DynamoDB 저장 + SNS
+│  ├─ image_processor/               # (플레이스홀더) analyzer 와 역할 중복 — 통합 대상
+│  │  └─ handler.py
+│  ├─ dashboard_api/                 # (플레이스홀더) 대시보드 API — 검수 큐 조회·승인/수정/반려
+│  │  └─ handler.py
+│  └─ report_generator/              # (플레이스홀더) Bedrock 일일 보고서 생성
+│     └─ handler.py
 │
-├─ src/                              # 클라우드 공유 분석 라이브러리 (analyzer Lambda·노트북이 사용)
-│  ├─ bedrock_analyzer.py            # Bedrock 비전 모델로 손상 유형/정도 판정
+├─ src/                              # 클라우드 공유 분석 라이브러리 (analyzer Lambda 가 사용)
+│  ├─ bedrock_analyzer.py            # Bedrock(Sonnet 4.5) 비전 모델로 손상 유형/정도 판정
 │  ├─ risk_score.py                  # Risk Score 계산 (구멍 ≥ 찌그러짐 > 녹슴)
 │  ├─ s3_client.py                   # S3 이미지 조회/다운로드
 │  ├─ config.py                      # 리전/버킷/모델ID/가중치/임계값 설정
-│  └─ pipeline.py                    # S3→분석→스코어 배치 파이프라인 (CLI/노트북)
+│  └─ __init__.py
 │
-├─ dashboard/                        # 검수자 대시보드 (Layer 3)
+├─ dashboard/                        # 검수자 대시보드 (Layer 3, 정의진)
 │  └─ README.md                      # 대시보드 실행 방법, 화면 구성 정리
 │
 ├─ mock-data/                        # 팀원 간 JSON 필드명 통일용 샘플
@@ -60,16 +65,13 @@ container-damage-inspection-pbl/
 │  ├─ sample_cloud_result.json       # Foundation Model 분석 결과 예시
 │  └─ sample_dynamodb_item.json      # DynamoDB 최종 저장 item 예시
 │
-├─ infra/                            # AWS 리소스 설정 메모
-│  └─ aws-resources.md               # S3, DynamoDB, Lambda, Bedrock 리소스 이름 정리
-│
-│
-├─ container_risk_analysis.ipynb     # 개발/검증용 노트북 (S3→분석→스코어)
-├─ build_lambda.ps1                  # analyzer Lambda 배포 zip 생성 스크립트
-├─ template.yaml                     # SAM IaC (Lambda+S3트리거+DynamoDB+SNS)
-├─ requirements.txt                  # 파이썬 의존성
-└─ .env.example                      # 환경변수 템플릿
+└─ infra/                            # AWS 리소스 설정 메모
+   └─ aws-resources.md               # S3, DynamoDB, Lambda, Bedrock 리소스 이름 정리
 ```
+
+> **구현 상태:** `lambda/container-damage-analyzer` + `src/` 만 실제 동작하는 코드이며,
+> 나머지 `lambda/*` 핸들러와 `edge-yolo/`, `mock-data/` 파일은 팀 저장소의 플레이스홀더(빈 파일)다.
+> `lambda/image_processor` 는 analyzer 와 역할이 겹치므로 하나로 통합 예정.
 ---
 
 ## 3. JSON 데이터 흐름
@@ -177,3 +179,22 @@ edge-result-key: edge-results/EVT-20260709-0001.json
 | PENDING | 보고서 생성 중 |
 | CREATED | 보고서 생성 완료 |
 | FAILED | 보고서 생성 실패 |
+
+---
+
+## 7. 분석 Lambda 배포
+
+분석 Lambda(`lambda/container-damage-analyzer`)는 `src/` 를 함께 묶어 배포한다.
+
+```powershell
+# 1) 배포 패키지 생성 → lambda_deploy.zip (생성물, git 추적 안 함)
+.\build_lambda.ps1
+
+# 2) AWS 콘솔에서 container-damage-analyzer 에 lambda_deploy.zip 업로드
+#    - 핸들러: lambda_handler.lambda_handler
+#    - 타임아웃 90초 / 메모리 512MB
+#    - 환경변수: S3_BUCKET, BEDROCK_MODEL_ID, DDB_TABLE, SNS_TOPIC_ARN, RISK_ALERT_LEVEL
+```
+
+> `lambda_deploy.zip` 은 `build_lambda.ps1` 이 만드는 **일회성 산출물**이라 저장소에 두지 않는다
+> (`.gitignore` 처리). **코드를 수정하면 `build_lambda.ps1` 로 다시 만들어 재업로드**하면 된다.
