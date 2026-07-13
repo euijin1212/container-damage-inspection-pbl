@@ -1,10 +1,10 @@
 'use client'
 
 import { useEffect, useState } from 'react'
-import { Container, Radio } from 'lucide-react'
+import { Container, Loader2, Radio } from 'lucide-react'
 import { formatTimeOnly } from '@/lib/format'
 
-export function DashboardHeader() {
+export function DashboardHeader({ processingCount }: { processingCount: number }) {
   const [now, setNow] = useState<string>('')
 
   useEffect(() => {
@@ -22,20 +22,25 @@ export function DashboardHeader() {
             <Container className="size-5" aria-hidden />
           </div>
           <div>
-            <h1 className="text-sm font-semibold leading-tight tracking-tight">PortScan Control</h1>
-            <p className="font-mono text-[11px] uppercase tracking-wider text-muted-foreground">
-              Container Damage Inspection
-            </p>
+            <h1 className="text-sm font-semibold leading-tight tracking-tight">PortScan 관제 시스템</h1>
+            <p className="font-mono text-[11px] uppercase tracking-wider text-muted-foreground">컨테이너 손상 검수</p>
           </div>
         </div>
 
         <div className="flex items-center gap-3">
+          <span className="hidden items-center gap-1.5 rounded-md border border-info/30 bg-info/10 px-2.5 py-1 text-xs text-info sm:inline-flex">
+            <Loader2 className="size-3.5 animate-spin" aria-hidden />
+            분석 중 {processingCount}건
+          </span>
           <span className="hidden items-center gap-1.5 rounded-md border border-success/30 bg-success/10 px-2.5 py-1 text-xs text-success sm:inline-flex">
             <Radio className="size-3.5 animate-pulse" aria-hidden />
-            Live · Terminal 4
+            실시간 연결됨 · 4터미널
           </span>
-          <span className="font-mono text-sm tabular-nums text-muted-foreground" aria-label="Current time">
-            {now || '--:--:--'}
+          <span className="flex flex-col items-end leading-tight">
+            <span className="font-mono text-[10px] uppercase tracking-wider text-muted-foreground">마지막 업데이트</span>
+            <span className="font-mono text-sm tabular-nums text-foreground" aria-label="마지막 업데이트 시간">
+              {now || '--:--:--'}
+            </span>
           </span>
         </div>
       </div>

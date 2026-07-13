@@ -1,6 +1,6 @@
 import { cn } from '@/lib/utils'
-import type { ReviewStatus, RiskLevel } from '@/lib/inspection-types'
-import { RISK_META, STATUS_META } from '@/lib/mock-inspections'
+import type { ReportStatus, ReviewStatus, RiskLevel } from '@/lib/inspection-types'
+import { REPORT_META, RISK_META, STATUS_META } from '@/lib/mock-inspections'
 
 const toneClasses: Record<string, string> = {
   destructive: 'border-destructive/30 bg-destructive/15 text-destructive',
@@ -31,6 +31,11 @@ export function StatusBadge({ status }: { status: ReviewStatus }) {
 
 export function RiskBadge({ level }: { level: RiskLevel }) {
   const meta = RISK_META[level]
+  return <Pill tone={meta.tone}>{meta.label}</Pill>
+}
+
+export function ReportBadge({ status }: { status: ReportStatus }) {
+  const meta = REPORT_META[status]
   return <Pill tone={meta.tone}>{meta.label}</Pill>
 }
 

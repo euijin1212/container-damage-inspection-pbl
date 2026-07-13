@@ -1,14 +1,16 @@
 export type ReviewStatus =
+  | 'PROCESSING'
   | 'MANUAL_NEEDED'
   | 'AUDIT_REQUIRED'
   | 'AUTO_OK'
   | 'DONE'
   | 'REPORT_PENDING'
   | 'REPORT_CREATED'
+  | 'FAILED'
 
 export type RiskLevel = 'HIGH' | 'MEDIUM' | 'LOW'
 
-export type ReportStatus = 'NOT_STARTED' | 'GENERATING' | 'READY'
+export type ReportStatus = 'PENDING' | 'GENERATING' | 'CREATED' | 'FAILED'
 
 export interface BoundingBox {
   /** All values are percentages (0-100) relative to the image dimensions. */
@@ -23,6 +25,7 @@ export interface Detection {
   label: string
   confidence: number // 0-1
   severity: RiskLevel
+  description: string
   box: BoundingBox
 }
 
@@ -42,6 +45,12 @@ export interface Inspection {
     matchesManifest: boolean
   }
   reportStatus: ReportStatus
+  reportCreatedAt?: string // ISO timestamp
+  gate: string
   lane: string
   inspector: string
+  reviewerComment?: string
+  aiSummary: string
+  verdict: string
+  errorMessage?: string
 }
