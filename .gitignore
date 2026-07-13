@@ -1,0 +1,38 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Environment
+.env
+.env.*
+
+# AWS credentials
+.aws/
+*.pem
+*.key
+credentials
+config
+
+# YOLO / model weights
+*.pt
+*.pth
+*.onnx
+edge-yolo/weights/*
+!edge-yolo/weights/.gitkeep
+
+# Local test images/results
+edge-yolo/input_images/*
+!edge-yolo/input_images/.gitkeep
+
+edge-yolo/output_results/*
+!edge-yolo/output_results/.gitkeep
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
