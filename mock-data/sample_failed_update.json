@@ -1,0 +1,12 @@
+{
+  "processed_at": "2026-07-13T11:30:08Z",
+  "cloud_analysis": {
+    "analysis_status": "FAILED",
+    "error_message": "Foundation Model timeout"
+  },
+  "risk": {
+    "risk_score": null,
+    "risk_level": null
+  },
+  "review_status": "INFERENCE_FAILED"
+}

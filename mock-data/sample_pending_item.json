@@ -1,0 +1,41 @@
+{
+  "event_id": "EVT-20260713-0001",
+  "event_date": "2026-07-13",
+  "captured_at": "2026-07-13T11:30:00Z",
+  "container": {
+    "container_id": "MSCU1234567"
+  },
+  "source": {
+    "gate_id": "GATE-01",
+    "camera_id": "CAM-01"
+  },
+  "image": {
+    "bucket": "container-damage",
+    "raw_image_key": "raw-images/EVT-20260713-0001.jpg"
+  },
+  "edge": {
+    "edge_status": "DAMAGE_SUSPECTED",
+    "edge_model": "YOLOv8",
+    "edge_confidence": 0.82,
+    "edge_detections": [
+      {
+        "damage_class": "damage",
+        "confidence": 0.82,
+        "bbox": {
+          "x_min": 412,
+          "y_min": 288,
+          "x_max": 580,
+          "y_max": 411
+        }
+      }
+    ]
+  },
+  "cloud_analysis": {
+    "analysis_status": "PENDING"
+  },
+  "risk": {
+    "risk_score": null,
+    "risk_level": null
+  },
+  "review_status": "PENDING_CLOUD_ANALYSIS"
+}
