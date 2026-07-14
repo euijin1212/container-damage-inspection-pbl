@@ -23,7 +23,8 @@ export interface BoundingBox {
 export interface Detection {
   id: string
   label: string
-  confidence: number // 0-1
+  /** @deprecated 대시보드 미표시. 위험도 계산용으로만 내부 사용 가능 */
+  confidence?: number // 0-1
   severity: RiskLevel
   description: string
   box: BoundingBox
@@ -32,6 +33,10 @@ export interface Detection {
 export interface InspectionReport {
   report_status: ReportStatus
   report_created_at?: string // ISO timestamp
+  /** S3 Presigned URL (PDF) */
+  report_url?: string
+  report_path?: string
+  report_summary?: string
 }
 
 export interface Inspection {
@@ -41,7 +46,6 @@ export interface Inspection {
   raw_image_url: string
   annotated_s3_url?: string
   image_s3_url?: string
-  edge_confidence?: number // 0-1
   risk_score: number // 0-100
   risk_level: RiskLevel
   review_status: ReviewStatus
@@ -57,6 +61,8 @@ export interface Inspection {
   }
   report_status?: ReportStatus
   report_created_at?: string // ISO timestamp
+  /** S3 Presigned URL — 보고서 PDF */
+  report_url?: string
   report?: InspectionReport
   assigned_inspector?: string
   reviewer_comment?: string

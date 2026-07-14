@@ -38,6 +38,7 @@ import type { Inspection, ReviewStatus, RiskLevel } from '@/lib/inspection-types
 import { STATUS_META } from '@/lib/mock-inspections'
 import { riskScoreColor, StatusBadge } from './status-badges'
 import { formatCaptured } from '@/lib/format'
+import { uniqueDamageFromInspection } from '@/lib/damage'
 
 type StatusFilter = ReviewStatus | 'ALL'
 
@@ -53,14 +54,12 @@ const STATUS_PRIORITY: Record<ReviewStatus, number> = {
   AUTO_OK: 7,
 }
 
-// Order of the status dropdown options.
+// 실제 파이프라인에서 쓰는 상태만 필터에 노출
 const STATUS_OPTIONS: ReviewStatus[] = [
   'PENDING_CLOUD_ANALYSIS',
   'MANUAL_NEEDED',
-  'AUDIT_REQUIRED',
   'AUTO_OK',
   'DONE',
-  'REPORT_PENDING',
   'REPORT_CREATED',
   'INFERENCE_FAILED',
 ]
@@ -89,6 +88,24 @@ function getInspectionImage(inspection: Inspection) {
 
 function getCapturedAt(inspection: Inspection) {
   return (inspection as Inspection & InspectionImageFields).captured_at || inspection.captured_at
+}
+
+function getReportStatus(inspection: Inspection) {
+  return inspection.report?.report_status ?? inspection.report_status
+}
+
+/** 요약 카드/드롭다운 필터. REPORT_* 는 report_status 기준, 나머지는 review_status. */
+function matchesStatusFilter(inspection: Inspection, statusFilter: StatusFilter) {
+  if (statusFilter === 'ALL') return true
+  if (statusFilter === 'REPORT_CREATED') {
+    const rs = getReportStatus(inspection)
+    return rs === 'GENERATED' || rs === 'COMPLETED'
+  }
+  if (statusFilter === 'REPORT_PENDING') {
+    const rs = getReportStatus(inspection)
+    return rs === 'GENERATING' || inspection.review_status === 'REPORT_PENDING'
+  }
+  return inspection.review_status === statusFilter
 }
 
 function rowAccentClass(inspection: Inspection) {
@@ -120,12 +137,13 @@ export function InspectionTable({
     const q = query.trim().toLowerCase()
     return inspections
       .filter((i) => {
-        if (statusFilter !== 'ALL' && i.review_status !== statusFilter) return false
+        if (!matchesStatusFilter(i, statusFilter)) return false
         if (risk !== 'ALL' && i.risk_level !== risk) return false
         if (!q) return true
         return (
           i.container_id.toLowerCase().includes(q) ||
           i.event_id.toLowerCase().includes(q) ||
+          uniqueDamageFromInspection(i).toLowerCase().includes(q) ||
           i.damage_summary.toLowerCase().includes(q)
         )
       })
@@ -232,7 +250,6 @@ export function InspectionTable({
                         src={getInspectionImage(i)}
                         alt={`${i.container_id} 검수 썸네일`}
                         className="size-full object-cover"
-                        crossOrigin="anonymous"
                       />
                     </div>
                   </TableCell>
@@ -242,7 +259,9 @@ export function InspectionTable({
                   <TableCell className="whitespace-nowrap text-sm text-muted-foreground">
                     {formatCaptured(getCapturedAt(i))}
                   </TableCell>
-                  <TableCell className="max-w-[220px] truncate text-sm text-muted-foreground">{i.damage_summary}</TableCell>
+                  <TableCell className="max-w-[220px] truncate text-sm text-muted-foreground">
+                    {uniqueDamageFromInspection(i)}
+                  </TableCell>
                   <TableCell className="text-right">
                     {isProcessing ? (
                       <span className="text-sm text-muted-foreground">-</span>
@@ -305,9 +324,15 @@ export function InspectionTable({
             {rows.length === 0 && (
               <TableRow className="hover:bg-transparent">
                 <TableCell colSpan={7} className="py-14 text-center">
-                  <p className="text-sm font-medium text-foreground">현재 대기 중인 검수 항목이 없습니다.</p>
+                  <p className="text-sm font-medium text-foreground">
+                    {statusFilter === 'ALL'
+                      ? '현재 대기 중인 검수 항목이 없습니다.'
+                      : '선택한 조건에 맞는 검수 항목이 없습니다.'}
+                  </p>
                   <p className="mt-1 text-xs text-muted-foreground">
-                    새로운 컨테이너 분석 결과가 들어오면 자동으로 표시됩니다.
+                    {statusFilter === 'ALL'
+                      ? '새로운 컨테이너 분석 결과가 들어오면 자동으로 표시됩니다.'
+                      : '필터를 전체로 바꾸거나 다른 상태를 선택해 보세요.'}
                   </p>
                 </TableCell>
               </TableRow>
