@@ -28,9 +28,9 @@ Simulator → DynamoDB PutItem(PENDING) → S3 PutObject(raw image)
 * **사용하지 않는 것 (MVP):**
   * S3 metadata 사용 **X**
   * YOLO 결과 JSON(`edge-results/`) 저장 **X**
-* **선택/추후 기능:**
+* **선택/추가 기능:**
   * `annotated-images/` : 선택 기능
-  * `reports/` : 추후 기능
+  * `reports/` : report_generator 가 생성한 EIR PDF 저장
 
 ⚠️ **무한 루프 주의:** Lambda 분석 결과 이미지(어노테이션 등)를 원본 트리거 버킷의 `raw-images/` 접두사에 다시 저장하면 트리거가 재실행되어 무한 루프가 발생할 수 있습니다. 결과물은 별도 버킷이나 트리거가 제외된 접두사(`annotated-images/` 등)에만 저장합니다.
 
@@ -120,5 +120,43 @@ Risk Score가 임계 등급(`RISK_ALERT_LEVEL`, 기본 `HIGH`) 이상일 때 관
 ## 6. Amazon CloudWatch (모니터링)
 
 * Lambda 실행 로그 그룹: `/aws/lambda/container-damage-analyzer`
-* 확인 포인트: 분석 완료 로그, 에러/타임아웃, 처리 지연
-* 로그 그룹은 함수가 **최초 실행될 때 자동 생성**된다.
+* 확인 포인트: `[분석완료] event_id=... → HIGH (score=...)` 로그, 에러/타임아웃, 처리 지연
+* 로그 그룹은 함수가 **최초 실행될 때 자동 생성**된다(미실행 시 "로그 그룹 없음"은 정상).
+
+---
+
+## 7. 보고서 자동화 Lambda (report_generator)
+
+검수 완료(`review_status = DONE`) 시 DynamoDB Streams로 트리거되어 EIR 보고서(PDF)를 생성·저장합니다.
+
+* **함수명:** `report_generator`
+* **핸들러:** `handler.lambda_handler`
+* **트리거:** DynamoDB Streams (`InspectionEventTable`, View type: New and old images)
+* **타임아웃/메모리:** `120초` / `256~512MB` 권장 (PDF 렌더 포함)
+
+### 환경 변수
+* `DDB_TABLE`: 보고서 메타를 갱신할 테이블명 (`InspectionEventTable`)
+* `REPORT_BUCKET` / `REPORT_PREFIX`: PDF 저장 위치 (기본 `reports/`)
+* `BEDROCK_MODEL_ID`: 보고서 생성 모델 ID
+* `REPORT_FONT_PATH`: (선택) 한글 TTF 경로. 미설정 시 `src/fonts/NanumGothic.ttf` 자동 사용
+* `KNOWLEDGE_BASE_ID` / `KB_MAX_RESULTS`: (선택) 보고서 RAG용 Knowledge Base
+
+### 필수 IAM 정책
+* `dynamodb:UpdateItem` (보고서 `report` 메타 갱신)
+* DynamoDB Streams 읽기: `GetRecords`/`GetShardIterator`/`DescribeStream`/`ListStreams`
+  (관리형 정책 `AWSLambdaDynamoDBExecutionRole` 로 대체 가능)
+* `s3:PutObject` (`reports/` 경로)
+* `bedrock:InvokeModel` (보고서 생성)
+* `bedrock:Retrieve` (RAG 사용 시)
+
+---
+
+## 8. Amazon Bedrock Knowledge Base (보고서 RAG, 선택)
+
+보고서 양식/작성 지침을 색인해 보고서 생성 시 참고하도록 합니다.
+
+* **데이터 소스:** S3 (`knowledge-base/*.md` 업로드)
+* **임베딩 모델:** Titan Text Embeddings v2 등
+* **벡터 스토어:** OpenSearch Serverless 등
+* **구성 방법:** [../knowledge-base/README.md](../knowledge-base/README.md) 참고
+* 양식 수정 후에는 KB **Sync** 로 재색인 (코드 재배포 불필요)

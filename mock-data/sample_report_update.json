@@ -1,0 +1,9 @@
+{
+  "report": {
+    "report_status": "CREATED",
+    "report_path": "s3://container-damage/reports/EVT-20260713-0001.pdf",
+    "report_generated_at": "2026-07-13T12:05:00Z",
+    "reuse_decision": "REJECT",
+    "report_summary": "하단 우측 관통성 구멍으로 구조적 손상이 확인되어 재사용 불가로 판정한다."
+  }
+}

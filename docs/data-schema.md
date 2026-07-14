@@ -108,6 +108,23 @@ Lambda는 기존 item 전체를 덮어쓰지 않고, 아래 필드만 `UpdateIte
 
 ---
 
+## 6-1. 보고서 메타 필드 (`report` 중첩 객체)
+
+검수 완료(`review_status = DONE`) 시 DynamoDB Streams로 트리거되는
+`lambda/report_generator`가 EIR PDF를 만든 뒤 `report` 객체를 UpdateItem 한다.
+
+| 필드 | 타입 | 설명 |
+|---|---|---|
+| `report.report_status` | S | `NOT_CREATED` \| `PENDING` \| `CREATED` \| `FAILED` |
+| `report.report_path` | S | PDF S3 경로 (`s3://.../reports/<event_id>.pdf`) |
+| `report.report_generated_at` | S | 보고서 생성 완료 시각 (ISO 8601) |
+| `report.reuse_decision` | S | `USABLE` \| `REPAIR_NEEDED` \| `REJECT` |
+| `report.report_summary` | S | 보고서 요약 (대시보드 미리보기용) |
+
+예시는 [../mock-data/sample_report_update.json](../mock-data/sample_report_update.json) 참조.
+
+---
+
 ## 7. 최소 PENDING item 구조 요약
 
 Simulator가 YOLO 결과가 `DAMAGE_SUSPECTED`인 경우, S3 이미지 업로드 전에 아래 구조로 PutItem 한다.
@@ -215,3 +232,4 @@ Simulator가 YOLO 결과가 `DAMAGE_SUSPECTED`인 경우, S3 이미지 업로드
 | [sample_pending_item.json](../mock-data/sample_pending_item.json) | Simulator가 PutItem 하는 최소 PENDING item |
 | [sample_completed_update.json](../mock-data/sample_completed_update.json) | Lambda 성공 시 UpdateItem 필드 |
 | [sample_failed_update.json](../mock-data/sample_failed_update.json) | Lambda 실패 시 UpdateItem 필드 |
+| [sample_report_update.json](../mock-data/sample_report_update.json) | report_generator 성공 시 `report` 필드 |

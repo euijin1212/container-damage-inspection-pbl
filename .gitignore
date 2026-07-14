@@ -19,7 +19,9 @@ edge-yolo/output_results/
 
 # ===== 빌드 산출물 =====
 build/
+build_report/
 lambda_deploy.zip
+report_lambda_deploy.zip
 *.zip
 
 # ===== Python =====
