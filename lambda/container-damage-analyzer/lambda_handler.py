@@ -253,11 +253,25 @@ def _build_failure_update(error_message: str, bucket: str, key: str) -> Dict:
     }
 
 
-def _update_dynamo(event_id: str, fields: Dict) -> bool:
+def _get_item(event_id: str) -> Optional[Dict]:
+    table_name = os.getenv("DDB_TABLE", _DEFAULT_TABLE)
+    return _ddb.Table(table_name).get_item(Key={"event_id": event_id}).get("Item")
+
+
+def _is_pending_for_analysis(item: Dict) -> bool:
+    cloud = item.get("cloud_analysis") or {}
+    return (
+        item.get("review_status") == "PENDING_CLOUD_ANALYSIS"
+        and cloud.get("analysis_status") == "PENDING"
+    )
+
+
+def _update_dynamo(event_id: str, fields: Dict, *, require_pending: bool = False) -> bool:
     """기존 item 의 지정 필드만 UpdateItem 으로 핀셋 업데이트한다.
 
     - Key: {"event_id": event_id} (Sort Key 없음)
     - ConditionExpression="attribute_exists(event_id)" 로 기존 item 이 있을 때만 갱신
+    - require_pending=True 이면 아직 분석 대기 상태인 item 만 갱신
     - item 이 없으면(ConditionalCheckFailed) 새로 만들지 않고 로그만 남긴 뒤 False 반환
     - `report` 속성이 아직 없으면 `report_status=NOT_CREATED`(미생성)로 초기화한다
       (이미 CREATED/PENDING 등이면 덮어쓰지 않음)
@@ -276,19 +290,31 @@ def _update_dynamo(event_id: str, fields: Dict) -> bool:
     expr_values[":report_init"] = {"report_status": "NOT_CREATED"}
 
     try:
+        condition = "attribute_exists(event_id)"
+        if require_pending:
+            expr_names["#cloud"] = "cloud_analysis"
+            expr_names["#analysis_status"] = "analysis_status"
+            expr_names["#review_status"] = "review_status"
+            expr_values[":pending_analysis"] = "PENDING"
+            expr_values[":pending_review"] = "PENDING_CLOUD_ANALYSIS"
+            condition = (
+                "attribute_exists(event_id) AND "
+                "#cloud.#analysis_status = :pending_analysis AND "
+                "#review_status = :pending_review"
+            )
+
         table.update_item(
             Key={"event_id": event_id},
             UpdateExpression="SET " + ", ".join(set_parts),
             ExpressionAttributeNames=expr_names,
             ExpressionAttributeValues=expr_values,
-            ConditionExpression="attribute_exists(event_id)",
+            ConditionExpression=condition,
         )
         return True
     except ClientError as exc:
         if exc.response.get("Error", {}).get("Code") == "ConditionalCheckFailedException":
             print(
-                f"[스킵] DynamoDB에 event_id={event_id} item이 없어 업데이트하지 않음 "
-                f"(Simulator PENDING item 미생성). 새 item을 만들지 않습니다."
+                f"[스킵] event_id={event_id} item이 없거나 이미 처리되어 업데이트하지 않음"
             )
             return False
         raise
@@ -316,6 +342,29 @@ def _publish_alert(event_id: str, risk: Dict) -> bool:
 
 def _process_target(bucket: str, key: str, event_id: str) -> Dict:
     """단일 (bucket, key) 처리. 실패해도 다른 이미지에 영향 없도록 격리."""
+    existing = _get_item(event_id)
+    if not existing:
+        raise ItemNotFoundError(
+            f"event_id={event_id} item이 DynamoDB에 없어 분석을 시작하지 않음"
+        )
+    if not _is_pending_for_analysis(existing):
+        cloud = existing.get("cloud_analysis") or {}
+        reason = (
+            f"review_status={existing.get('review_status')}, "
+            f"analysis_status={cloud.get('analysis_status')}"
+        )
+        print(f"[스킵] event_id={event_id} 이미 처리됨: {reason}")
+        return {
+            "event_id": event_id,
+            "skipped": True,
+            "reason": "already_processed",
+            "review_status": existing.get("review_status"),
+            "analysis_status": cloud.get("analysis_status"),
+        }
+
+    edge = existing.get("edge") or {}
+    edge_detections = list(edge.get("edge_detections") or [])
+
     # --- 분석 단계 (실패 시 FAILED 업데이트 시도 후 예외 전파) ---
     try:
         image = _store.download_from(bucket, key)
@@ -323,21 +372,14 @@ def _process_target(bucket: str, key: str, event_id: str) -> Dict:
         risk = calculate_risk(damages)
     except Exception as exc:  # noqa: BLE001
         print(f"[분석실패] event_id={event_id}: {exc}")
-        _update_dynamo(event_id, _build_failure_update(str(exc), bucket, key))
+        _update_dynamo(
+            event_id,
+            _build_failure_update(str(exc), bucket, key),
+            require_pending=True,
+        )
         raise
 
     img_w, img_h = _image_size(image.body, image.image_format)
-
-    # 기존 item 의 YOLO edge bbox 를 가져와 detection 에 연결
-    edge_detections: List = []
-    try:
-        table_name = os.getenv("DDB_TABLE", _DEFAULT_TABLE)
-        existing = _ddb.Table(table_name).get_item(Key={"event_id": event_id}).get("Item")
-        if existing:
-            edge = existing.get("edge") or {}
-            edge_detections = list(edge.get("edge_detections") or [])
-    except Exception as exc:  # noqa: BLE001
-        print(f"[경고] edge bbox 조회 실패 event_id={event_id}: {exc}")
 
     # --- 성공 업데이트 단계 ---
     update = _build_success_update(
@@ -350,11 +392,12 @@ def _process_target(bucket: str, key: str, event_id: str) -> Dict:
         img_w=img_w,
         img_h=img_h,
     )
-    if not _update_dynamo(event_id, update):
-        # 분석은 성공했으나 대상 item 이 없음 → 새로 만들지 않고 에러로 처리
-        raise ItemNotFoundError(
-            f"event_id={event_id} item이 DynamoDB에 없어 업데이트를 건너뜀"
-        )
+    if not _update_dynamo(event_id, update, require_pending=True):
+        return {
+            "event_id": event_id,
+            "skipped": True,
+            "reason": "already_processed_during_update",
+        }
 
     notified = _publish_alert(event_id, update["risk"])
     print(
