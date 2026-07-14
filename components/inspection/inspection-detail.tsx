@@ -49,7 +49,7 @@ interface InspectionDetailProps {
   queueIndex: number
   queueTotal: number
   onApprove: (id: string) => void
-  onReject: (id: string, comment: string) => void
+  onReject: (id: string) => void
   onReinspect: (id: string, comment: string) => void
   onGenerateReport: (id: string) => void
   /** 상세 재조회 후 상위 state 반영 (보고서 URL 등) */
@@ -155,7 +155,7 @@ export function InspectionDetail({
   function runConfirm() {
     if (!inspection) return
     if (confirm === 'approve') onApprove(inspection.event_id)
-    if (confirm === 'reject') onReject(inspection.event_id, comment)
+    if (confirm === 'reject') onReject(inspection.event_id)
     if (confirm === 'reinspect') onReinspect(inspection.event_id, comment)
     closeConfirm()
   }
@@ -419,10 +419,11 @@ export function InspectionDetail({
           <p className="text-sm text-muted-foreground">
             {confirm === 'approve' &&
               '이 컨테이너 검수 건을 승인하시겠습니까? 승인 시 보고서가 자동 생성되며, 다음 검수 항목으로 이동합니다.'}
-            {confirm === 'reject' && '이 컨테이너 검수 건을 반려하시겠습니까? 반려 사유를 남겨 주세요.'}
+            {confirm === 'reject' &&
+              '이 컨테이너 검수 건을 반려하시겠습니까? 관련 이미지·보고서(S3)와 검수 기록(DynamoDB)이 삭제됩니다.'}
             {confirm === 'reinspect' && '이 컨테이너의 재검수를 요청하시겠습니까? 요청 사유를 남겨 주세요.'}
           </p>
-          {(confirm === 'reject' || confirm === 'reinspect') && (
+          {confirm === 'reinspect' && (
             <Textarea
               value={comment}
               onChange={(e) => setComment(e.target.value)}

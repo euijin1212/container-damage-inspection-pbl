@@ -325,11 +325,15 @@ export async function reviewInspection(
     memo?: string
     risk_level?: string
   },
-): Promise<Inspection> {
-  const res = await api<{ item?: Record<string, unknown> }>(
-    `/inspections/${encodeURIComponent(eventId)}/review`,
-    { method: 'POST', body: JSON.stringify(body) },
-  )
+): Promise<Inspection | null> {
+  const res = await api<{
+    item?: Record<string, unknown>
+    deleted?: boolean
+  }>(`/inspections/${encodeURIComponent(eventId)}/review`, {
+    method: 'POST',
+    body: JSON.stringify(body),
+  })
+  if (res.deleted || body.action === 'reject') return null
   if (res.item) return toInspection(res.item)
   return getInspection(eventId)
 }

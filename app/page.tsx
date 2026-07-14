@@ -199,7 +199,7 @@ export default function Page() {
       })
       // review_status=DONE → DynamoDB Streams → report_generator
       patch(id, {
-        ...updated,
+        ...(updated || {}),
         review_status: 'DONE',
         report_status: 'GENERATING',
       })
@@ -210,15 +210,28 @@ export default function Page() {
     }
   }
 
-  async function handleReject(id: string, comment: string) {
+  async function handleReject(id: string) {
     try {
-      const updated = await reviewInspection(id, {
+      await reviewInspection(id, {
         action: 'reject',
         reviewer: 'dashboard',
-        memo: comment.trim() || '반려',
+        memo: '반려',
       })
-      patch(id, updated)
-      goNext(id)
+      // DynamoDB/S3 삭제 완료 → 목록에서 제거 후 다음 건으로
+      const idx = reviewQueue.findIndex((i) => i.event_id === id)
+      const next = reviewQueue[idx + 1]
+      setInspections((prev) => prev.filter((i) => i.event_id !== id))
+      knownIdsRef.current.delete(id)
+      if (next) {
+        setSelectedId(next.event_id)
+        setOpen(true)
+        void getInspection(next.event_id).then((detail) => {
+          setInspections((prev) => mergeInspections(prev, [detail]))
+        })
+      } else {
+        setOpen(false)
+        setSelectedId(null)
+      }
       await refreshList({ silent: true })
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
@@ -232,7 +245,10 @@ export default function Page() {
         reviewer: 'dashboard',
         memo: comment.trim() || '재검수 요청',
       })
-      patch(id, { ...updated, reviewer_comment: comment.trim() || undefined })
+      patch(id, {
+        ...(updated || {}),
+        reviewer_comment: comment.trim() || undefined,
+      })
       goNext(id)
       await refreshList({ silent: true })
     } catch (e) {
@@ -249,7 +265,7 @@ export default function Page() {
         memo: '보고서 생성',
       })
       patch(id, {
-        ...updated,
+        ...(updated || {}),
         review_status: 'DONE',
         report_status: 'GENERATING',
       })
