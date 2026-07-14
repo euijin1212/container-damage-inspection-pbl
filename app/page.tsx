@@ -8,8 +8,7 @@ import { InspectionTable } from '@/components/inspection/inspection-table'
 import { InspectionDetail } from '@/components/inspection/inspection-detail'
 import { getInspection, listInspections, reviewInspection } from '@/lib/api'
 import type { Inspection, ReviewStatus } from '@/lib/inspection-types'
-
-type StatusFilter = ReviewStatus | 'ALL'
+import type { StatusFilter } from '@/lib/status-filters'
 
 const POLLING_INTERVAL_MS = 3000
 
@@ -57,7 +56,7 @@ export default function Page() {
   const [inspections, setInspections] = useState<Inspection[]>([])
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [open, setOpen] = useState(false)
-  const [statusFilter, setStatusFilter] = useState<StatusFilter>('ALL')
+  const [statusFilter, setStatusFilter] = useState<StatusFilter>('GATE_INFLOW')
   const [notification, setNotification] = useState<Inspection | null>(null)
   const [recentlyAddedIds, setRecentlyAddedIds] = useState<Set<string>>(() => new Set())
   const [loading, setLoading] = useState(true)

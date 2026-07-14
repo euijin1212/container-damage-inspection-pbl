@@ -34,16 +34,18 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog'
 import { cn } from '@/lib/utils'
-import type { Inspection, ReviewStatus, RiskLevel } from '@/lib/inspection-types'
-import { STATUS_META } from '@/lib/mock-inspections'
+import type { Inspection, RiskLevel } from '@/lib/inspection-types'
+import {
+  type StatusFilter,
+  FILTER_LABEL,
+  matchesStatusFilter,
+} from '@/lib/status-filters'
 import { riskScoreColor, StatusBadge } from './status-badges'
 import { formatCaptured } from '@/lib/format'
 import { uniqueDamageFromInspection } from '@/lib/damage'
 
-type StatusFilter = ReviewStatus | 'ALL'
-
 // Lower number = higher priority (shown first).
-const STATUS_PRIORITY: Record<ReviewStatus, number> = {
+const STATUS_PRIORITY: Record<string, number> = {
   MANUAL_NEEDED: 0,
   AUDIT_REQUIRED: 1,
   PENDING_CLOUD_ANALYSIS: 2,
@@ -54,11 +56,11 @@ const STATUS_PRIORITY: Record<ReviewStatus, number> = {
   AUTO_OK: 7,
 }
 
-// 실제 파이프라인에서 쓰는 상태만 필터에 노출
-const STATUS_OPTIONS: ReviewStatus[] = [
+// 드롭다운에 노출할 필터 (요약 카드 3종 + 세부 상태)
+const STATUS_OPTIONS: StatusFilter[] = [
+  'GATE_INFLOW',
   'PENDING_CLOUD_ANALYSIS',
   'MANUAL_NEEDED',
-  'AUTO_OK',
   'DONE',
   'REPORT_CREATED',
   'INFERENCE_FAILED',
@@ -88,24 +90,6 @@ function getInspectionImage(inspection: Inspection) {
 
 function getCapturedAt(inspection: Inspection) {
   return (inspection as Inspection & InspectionImageFields).captured_at || inspection.captured_at
-}
-
-function getReportStatus(inspection: Inspection) {
-  return inspection.report?.report_status ?? inspection.report_status
-}
-
-/** 요약 카드/드롭다운 필터. REPORT_* 는 report_status 기준, 나머지는 review_status. */
-function matchesStatusFilter(inspection: Inspection, statusFilter: StatusFilter) {
-  if (statusFilter === 'ALL') return true
-  if (statusFilter === 'REPORT_CREATED') {
-    const rs = getReportStatus(inspection)
-    return rs === 'GENERATED' || rs === 'COMPLETED'
-  }
-  if (statusFilter === 'REPORT_PENDING') {
-    const rs = getReportStatus(inspection)
-    return rs === 'GENERATING' || inspection.review_status === 'REPORT_PENDING'
-  }
-  return inspection.review_status === statusFilter
 }
 
 function rowAccentClass(inspection: Inspection) {
@@ -181,14 +165,14 @@ export function InspectionTable({
           <Select value={statusFilter} onValueChange={(v) => onStatusFilterChange(v as StatusFilter)}>
             <SelectTrigger className="h-10 rounded-md border-input bg-background sm:w-44" aria-label="상태 필터">
               <SelectValue placeholder="상태">
-                {(v: unknown) => (v === 'ALL' ? '전체' : STATUS_META[v as ReviewStatus].label)}
+                {(v: unknown) => FILTER_LABEL[(v as StatusFilter) || 'ALL'] || String(v)}
               </SelectValue>
             </SelectTrigger>
             <SelectContent>
               <SelectItem value="ALL">전체</SelectItem>
               {STATUS_OPTIONS.map((s) => (
                 <SelectItem key={s} value={s}>
-                  {STATUS_META[s].label}
+                  {FILTER_LABEL[s]}
                 </SelectItem>
               ))}
             </SelectContent>

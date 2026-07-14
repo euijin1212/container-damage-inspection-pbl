@@ -1,38 +1,42 @@
 'use client'
 
 import { cn } from '@/lib/utils'
-import type { Inspection, ReviewStatus } from '@/lib/inspection-types'
+import type { Inspection } from '@/lib/inspection-types'
+import {
+  type StatusFilter,
+  isApproved,
+  isGateInflow,
+  isReportCreated,
+} from '@/lib/status-filters'
 import { AnimatedStatNumber } from './animated-stat-number'
-
-type FilterValue = ReviewStatus | 'ALL'
 
 interface FlowItem {
   label: string
   value: number
-  filter: FilterValue
-  highlight?: boolean
+  filter: StatusFilter
 }
 
 interface SummaryCardsProps {
   inspections: Inspection[]
-  activeFilter: FilterValue
-  onFilter: (filter: FilterValue) => void
+  activeFilter: StatusFilter
+  onFilter: (filter: StatusFilter) => void
 }
 
 export function SummaryCards({ inspections, activeFilter, onFilter }: SummaryCardsProps) {
   const items: FlowItem[] = [
-    { label: '게이트 유입', value: inspections.length, filter: 'ALL' },
+    {
+      label: '게이트 유입',
+      value: inspections.filter(isGateInflow).length,
+      filter: 'GATE_INFLOW',
+    },
     {
       label: '승인 완료',
-      value: inspections.filter((i) => i.review_status === 'DONE' || i.review_status === 'AUTO_OK').length,
+      value: inspections.filter(isApproved).length,
       filter: 'DONE',
     },
     {
       label: '보고서 완료',
-      value: inspections.filter((i) => {
-        const reportStatus = i.report?.report_status ?? i.report_status
-        return reportStatus === 'GENERATED' || reportStatus === 'COMPLETED'
-      }).length,
+      value: inspections.filter(isReportCreated).length,
       filter: 'REPORT_CREATED',
     },
   ]
@@ -41,7 +45,7 @@ export function SummaryCards({ inspections, activeFilter, onFilter }: SummaryCar
     <section aria-label="검수 흐름" className="rounded-lg bg-card px-6 py-5">
       <div className="grid gap-0 md:grid-cols-3">
         {items.map((item, index) => {
-          const active = activeFilter === item.filter || (item.filter === 'ALL' && activeFilter === 'ALL')
+          const active = activeFilter === item.filter
 
           return (
             <button
