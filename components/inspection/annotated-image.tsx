@@ -25,7 +25,7 @@ interface AnnotatedImageProps {
 
 export function AnnotatedImage({ src, alt, detections = [], activeId, annotated = true }: AnnotatedImageProps) {
   return (
-    <div className="relative aspect-[4/3] w-full overflow-hidden rounded-md border border-border bg-muted">
+    <div className="relative aspect-[4/3] w-full overflow-hidden rounded-lg bg-slate-900">
       {/* eslint-disable-next-line @next/next/no-img-element */}
       <img src={src || '/placeholder.svg'} alt={alt} className="size-full object-cover" crossOrigin="anonymous" />
       {annotated &&
@@ -48,7 +48,7 @@ export function AnnotatedImage({ src, alt, detections = [], activeId, annotated 
             >
               <span
                 className={cn(
-                  'absolute -top-px left-0 -translate-y-full whitespace-nowrap rounded-sm px-1.5 py-0.5 font-mono text-[10px] font-semibold uppercase tracking-wide',
+                  'absolute -top-px left-0 -translate-y-full whitespace-nowrap rounded-sm px-1.5 py-0.5 text-xs font-semibold',
                   severityBg[d.severity],
                 )}
               >
@@ -59,7 +59,7 @@ export function AnnotatedImage({ src, alt, detections = [], activeId, annotated 
         })}
       {annotated && detections.length === 0 && (
         <div className="absolute inset-0 flex items-center justify-center">
-          <span className="rounded-md border border-success/30 bg-success/15 px-3 py-1 font-mono text-xs uppercase tracking-wide text-success">
+          <span className="rounded-md bg-emerald-50 px-3 py-1 text-xs font-medium text-emerald-700">
             No detections
           </span>
         </div>

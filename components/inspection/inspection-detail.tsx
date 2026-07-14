@@ -11,7 +11,6 @@ import {
   RefreshCw,
   RotateCw,
   ScanText,
-  User,
   X,
 } from 'lucide-react'
 import {
@@ -60,6 +59,11 @@ const severityDot: Record<string, string> = {
   HIGH: 'bg-destructive',
   MEDIUM: 'bg-warning',
   LOW: 'bg-success',
+}
+
+function getPrimaryConfidence(inspection: Inspection) {
+  const top = inspection.detections.reduce((max, detection) => Math.max(max, detection.confidence), 0)
+  return Math.round(top * 100)
 }
 
 export function InspectionDetail({
@@ -114,53 +118,43 @@ export function InspectionDetail({
 
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>
-      <SheetContent side="right" className="flex w-full flex-col gap-0 p-0 sm:!max-w-2xl">
-        <SheetHeader className="border-b border-border p-4">
-          <div className="flex items-center gap-2">
-            <span className="font-mono text-xs text-muted-foreground">{inspection.id}</span>
-            <StatusBadge status={inspection.status} />
-            <span className="ml-auto rounded-md border border-border bg-muted px-2 py-0.5 font-mono text-[11px] text-muted-foreground">
+      <SheetContent side="right" className="flex w-full flex-col gap-0 bg-slate-950 p-0 text-slate-100 sm:!max-w-2xl">
+        <SheetHeader className="border-b border-white/10 bg-slate-950 p-6">
+          <div className="flex items-center justify-between gap-3">
+            <span className="text-sm text-slate-400">컨테이너</span>
+            <span className="rounded-full bg-white/10 px-2.5 py-1 text-xs text-slate-300">
               대기열 {queueIndex} / {queueTotal}
             </span>
           </div>
-          <SheetTitle className="font-mono text-lg tracking-tight">{inspection.containerId}</SheetTitle>
-          <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-muted-foreground">
+          <SheetTitle className="text-3xl font-bold tracking-tight text-white">{inspection.containerId}</SheetTitle>
+          <div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-sm text-slate-400">
             <span className="inline-flex items-center gap-1">
-              <MapPin className="size-3.5" aria-hidden /> {inspection.gate} · {inspection.lane}
-            </span>
-            <span className="inline-flex items-center gap-1">
-              <User className="size-3.5" aria-hidden /> {inspection.inspector}
+              <MapPin className="size-3.5 text-blue-300" aria-hidden /> {inspection.gate} · {inspection.lane}
             </span>
             <span>{formatCaptured(inspection.capturedAt)}</span>
+            <StatusBadge status={inspection.status} />
+          </div>
+          <div className="flex items-center gap-3">
+            <span className={cn('text-4xl font-bold tabular-nums leading-none', riskScoreColor(inspection.riskScore))}>
+              {inspection.riskScore}
+            </span>
+            <RiskBadge level={inspection.riskLevel} />
           </div>
         </SheetHeader>
 
         <ScrollArea className="min-h-0 flex-1">
-          <div className="space-y-6 p-4">
-            {/* Risk + primary damage */}
-            <div className="flex items-stretch gap-3">
-              <div className="flex-1 rounded-lg border border-border bg-card p-4">
-                <p className="font-mono text-[11px] uppercase tracking-wider text-muted-foreground">위험 점수</p>
-                <div className="mt-1 flex items-center gap-3">
-                  <span className={cn('text-4xl font-semibold tabular-nums', riskScoreColor(inspection.riskScore))}>
-                    {inspection.riskScore}
-                  </span>
-                  <RiskBadge level={inspection.riskLevel} />
-                </div>
-              </div>
-              <div className="flex-1 rounded-lg border border-border bg-card p-4">
-                <p className="font-mono text-[11px] uppercase tracking-wider text-muted-foreground">주요 감지 손상</p>
-                <p className="mt-2 text-sm text-foreground text-pretty">{inspection.detectedDamage}</p>
-              </div>
-            </div>
-
+          <div className="space-y-6 p-5">
             {/* Images */}
             <Tabs defaultValue="annotated">
               <div className="flex items-center justify-between">
-                <h3 className="font-mono text-[11px] uppercase tracking-wider text-muted-foreground">컨테이너 이미지</h3>
-                <TabsList>
-                  <TabsTrigger value="annotated">AI 분석 이미지</TabsTrigger>
-                  <TabsTrigger value="original">원본 이미지</TabsTrigger>
+                <h3 className="text-sm font-semibold text-slate-200">AI 분석 이미지</h3>
+                <TabsList className="bg-white/10 text-slate-400">
+                  <TabsTrigger value="annotated" className="text-slate-300 data-active:bg-white/15 data-active:text-white">
+                    AI 분석 이미지
+                  </TabsTrigger>
+                  <TabsTrigger value="original" className="text-slate-300 data-active:bg-white/15 data-active:text-white">
+                    원본 이미지
+                  </TabsTrigger>
                 </TabsList>
               </div>
               <TabsContent value="annotated" className="mt-3">
@@ -180,14 +174,44 @@ export function InspectionDetail({
               </TabsContent>
             </Tabs>
 
-            {/* AI detections */}
-            <div>
-              <h3 className="mb-2 font-mono text-[11px] uppercase tracking-wider text-muted-foreground">
-                AI 감지 결과 ({inspection.detections.length})
-              </h3>
-              <div className="space-y-2">
+            {/* AI reading panel */}
+            <div className="rounded-lg bg-slate-900">
+              <div className="border-b border-white/10 px-5 py-4">
+                <h3 className="text-sm font-semibold text-slate-100">AI 판독 패널</h3>
+              </div>
+              <div className="grid gap-px bg-white/10 md:grid-cols-2">
+                <InfoCell label="감지 손상" value={inspection.detectedDamage} tone="dark" />
+                <InfoCell label="신뢰도" value={inspection.detections.length ? `${getPrimaryConfidence(inspection)}%` : '감지 없음'} tone="dark" />
+                <InfoCell label="심각도" value={SEVERITY_LABEL[inspection.riskLevel]} tone="dark" />
+                <div className="bg-slate-900 p-4">
+                  <dt className="text-xs text-slate-400">OCR 결과</dt>
+                  <dd className="mt-1 flex flex-wrap items-center gap-2 text-sm text-slate-100">
+                    <span className="inline-flex items-center gap-1.5">
+                      <ScanText className="size-4 text-accent" aria-hidden />
+                      {inspection.ocr.text || '인식 실패'}
+                    </span>
+                    <span className={cn('text-xs', inspection.ocr.matchesManifest ? 'text-success' : 'text-warning')}>
+                      {inspection.ocr.matchesManifest ? 'Manifest 일치' : 'Manifest 확인 필요'}
+                    </span>
+                  </dd>
+                </div>
+              </div>
+              <div className="border-t border-white/10 p-5">
+                <p className="text-xs text-slate-400">AI 판단 근거</p>
+                <p className="mt-2 text-sm leading-6 text-slate-300 text-pretty">
+                  {inspection.aiSummary || 'AI 판독 요약이 아직 생성되지 않았습니다.'}
+                </p>
+              </div>
+              <div className="border-t border-white/10 p-5">
+                <div className="mb-2 flex items-center justify-between">
+                  <h4 className="text-sm font-medium text-slate-300">
+                    감지 결과 {inspection.detections.length}건
+                  </h4>
+                  <span className="text-xs text-slate-500">{inspection.id}</span>
+                </div>
+                <div className="space-y-2">
                 {inspection.detections.length === 0 && (
-                  <p className="rounded-md border border-border bg-card p-3 text-sm text-muted-foreground">
+                  <p className="rounded-md bg-white/5 p-3 text-sm text-slate-400">
                     모델이 감지한 손상이 없습니다.
                   </p>
                 )}
@@ -199,80 +223,48 @@ export function InspectionDetail({
                     onMouseLeave={() => setActiveDetection(null)}
                     onFocus={() => setActiveDetection(d.id)}
                     onBlur={() => setActiveDetection(null)}
-                    className="w-full rounded-md border border-border bg-card p-3 text-left transition-colors hover:border-primary/40"
+                    className="w-full rounded-md bg-white/5 p-3 text-left transition-colors hover:bg-white/10"
                   >
                     <div className="flex items-center justify-between">
                       <div className="flex items-center gap-2.5">
                         <span className={cn('size-2 rounded-full', severityDot[d.severity])} aria-hidden />
-                        <p className="text-sm font-medium">{d.label}</p>
+                        <p className="text-sm font-medium text-slate-100">{d.label}</p>
                       </div>
                       <div className="flex items-center gap-3 text-right">
-                        <span className="font-mono text-sm tabular-nums">신뢰도 {Math.round(d.confidence * 100)}%</span>
-                        <span className="rounded-sm border border-border px-1.5 py-0.5 font-mono text-[11px] text-muted-foreground">
+                        <span className="text-sm tabular-nums text-slate-300">신뢰도 {Math.round(d.confidence * 100)}%</span>
+                        <span className="rounded-full bg-white/10 px-2 py-0.5 text-xs text-slate-300">
                           심각도 {SEVERITY_LABEL[d.severity]}
                         </span>
                       </div>
                     </div>
-                    <p className="mt-1.5 pl-[18px] text-xs text-muted-foreground text-pretty">{d.description}</p>
+                    <p className="mt-1.5 pl-[18px] text-xs text-slate-400 text-pretty">{d.description}</p>
                   </button>
                 ))}
-              </div>
-            </div>
-
-            {/* OCR */}
-            <div>
-              <h3 className="mb-2 font-mono text-[11px] uppercase tracking-wider text-muted-foreground">OCR 결과</h3>
-              <div className="rounded-md border border-border bg-card p-3">
-                <div className="flex items-center justify-between">
-                  <span className="inline-flex items-center gap-2 font-mono text-sm">
-                    <ScanText className="size-4 text-accent" aria-hidden />
-                    {inspection.ocr.text || '인식 실패'}
-                  </span>
-                  <span className="font-mono text-xs text-muted-foreground">
-                    신뢰도 {Math.round(inspection.ocr.confidence * 100)}%
-                  </span>
                 </div>
-                <Separator className="my-2.5" />
-                <span
-                  className={cn(
-                    'inline-flex items-center gap-1.5 text-xs',
-                    inspection.ocr.matchesManifest ? 'text-success' : 'text-warning',
-                  )}
-                >
-                  {inspection.ocr.matchesManifest ? (
-                    <>
-                      <Check className="size-3.5" aria-hidden /> 게이트 매니페스트와 일치
-                    </>
-                  ) : (
-                    <>
-                      <X className="size-3.5" aria-hidden /> 매니페스트 불일치 — 수동 확인 필요
-                    </>
-                  )}
-                </span>
               </div>
             </div>
 
             {/* Capture info */}
             <div>
-              <h3 className="mb-2 font-mono text-[11px] uppercase tracking-wider text-muted-foreground">촬영 정보</h3>
-              <dl className="grid grid-cols-2 gap-px overflow-hidden rounded-md border border-border bg-border">
-                <InfoCell label="게이트 및 레인" value={`${inspection.gate} · ${inspection.lane}`} />
-                <InfoCell label="담당 검수자" value={inspection.inspector} />
-                <InfoCell label="촬영 시간" value={formatDateTime(inspection.capturedAt)} />
-                <InfoCell label="검수 ID" value={inspection.id} mono />
+              <h3 className="mb-2 text-sm font-semibold text-slate-300">촬영 정보</h3>
+              <dl className="grid grid-cols-2 gap-px overflow-hidden rounded-lg bg-white/10">
+                <InfoCell label="게이트 및 레인" value={`${inspection.gate} · ${inspection.lane}`} tone="dark" />
+                <InfoCell label="담당 검수자" value={inspection.inspector} tone="dark" />
+                <InfoCell label="촬영 시간" value={formatDateTime(inspection.capturedAt)} tone="dark" />
+                <InfoCell label="검수 ID" value={inspection.id} tone="dark" />
               </dl>
             </div>
 
             {/* Report section */}
             <div>
-              <h3 className="mb-2 font-mono text-[11px] uppercase tracking-wider text-muted-foreground">보고서 상태</h3>
-              <div className="space-y-3 rounded-md border border-border bg-card p-4">
+              <h3 className="mb-2 text-sm font-semibold text-slate-300">보고서 상태</h3>
+              <div className="space-y-3 rounded-lg bg-slate-900 p-4">
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-2.5">
                     <FileText className="size-5 text-muted-foreground" aria-hidden />
                     <div>
                       <ReportBadge status={reportStatus} />
-                      <p className="mt-1 font-mono text-xs text-muted-foreground">
+                      <p className="mt-1 text-xs text-slate-400">
                         {reportStatus === 'CREATED' && inspection.reportCreatedAt
                           ? `생성 일시 ${formatDateTime(inspection.reportCreatedAt)}`
                           : reportStatus === 'GENERATING'
@@ -308,7 +300,7 @@ export function InspectionDetail({
                         <Download className="size-4" /> PDF 다운로드
                       </Button>
                       {downloadNote && (
-                        <span className="font-mono text-xs text-info">PDF 다운로드를 시작했습니다. (데모 환경)</span>
+                        <span className="text-xs text-blue-300">PDF 다운로드를 시작했습니다. (데모 환경)</span>
                       )}
                     </div>
                   </>
@@ -330,7 +322,7 @@ export function InspectionDetail({
         </ScrollArea>
 
         {/* Action footer */}
-        <div className="grid grid-cols-2 gap-2 border-t border-border p-4 sm:grid-cols-4">
+        <div className="grid grid-cols-2 gap-2 border-t border-white/10 bg-slate-950 p-4 sm:grid-cols-4">
           <Button variant="secondary" onClick={() => setConfirm('reinspect')}>
             <RefreshCw className="size-4" /> 재검수 요청
           </Button>
@@ -359,7 +351,7 @@ export function InspectionDetail({
               {confirm === 'reject' && '검수 반려'}
               {confirm === 'reinspect' && '재검수 요청'}
             </DialogTitle>
-            <DialogDescription className="font-mono text-xs">
+            <DialogDescription className="text-xs">
               {inspection.id} · {inspection.containerId}
             </DialogDescription>
           </DialogHeader>
@@ -402,13 +394,13 @@ export function InspectionDetail({
             <DialogTitle className="flex items-center gap-2">
               <FileText className="size-5 text-info" aria-hidden /> 컨테이너 손상 보고서
             </DialogTitle>
-            <DialogDescription className="font-mono text-xs">
+            <DialogDescription className="text-xs">
               {inspection.id} · {inspection.reportCreatedAt ? formatDateTime(inspection.reportCreatedAt) : ''}
             </DialogDescription>
           </DialogHeader>
           <div className="mt-2 space-y-4">
             <dl className="grid grid-cols-2 gap-px overflow-hidden rounded-md border border-border bg-border">
-              <InfoCell label="컨테이너 번호" value={inspection.containerId} mono />
+              <InfoCell label="컨테이너 번호" value={inspection.containerId} />
               <InfoCell label="검수 일시" value={formatDateTime(inspection.capturedAt)} />
               <InfoCell label="위험 점수" value={`${inspection.riskScore} / 100`} />
               <InfoCell label="위험도" value={SEVERITY_LABEL[inspection.riskLevel]} />
@@ -452,11 +444,23 @@ export function InspectionDetail({
   )
 }
 
-function InfoCell({ label, value, mono }: { label: string; value: string; mono?: boolean }) {
+function InfoCell({
+  label,
+  value,
+  mono,
+  tone = 'light',
+}: {
+  label: string
+  value: string
+  mono?: boolean
+  tone?: 'light' | 'dark'
+}) {
+  const dark = tone === 'dark'
+
   return (
-    <div className="bg-card p-3">
-      <dt className="font-mono text-[10px] uppercase tracking-wider text-muted-foreground">{label}</dt>
-      <dd className={cn('mt-0.5 text-sm text-foreground', mono && 'font-mono')}>{value}</dd>
+    <div className={cn('p-4', dark ? 'bg-slate-900' : 'bg-card')}>
+      <dt className={cn('text-xs', dark ? 'text-slate-400' : 'text-muted-foreground')}>{label}</dt>
+      <dd className={cn('mt-1 text-sm', dark ? 'text-slate-100' : 'text-foreground', mono && 'font-medium')}>{value}</dd>
     </div>
   )
 }
@@ -464,7 +468,7 @@ function InfoCell({ label, value, mono }: { label: string; value: string; mono?:
 function ReportBlock({ title, children }: { title: string; children: React.ReactNode }) {
   return (
     <div className="rounded-md border border-border bg-card p-3">
-      <h4 className="mb-2 font-mono text-[11px] uppercase tracking-wider text-muted-foreground">{title}</h4>
+      <h4 className="mb-2 text-sm font-semibold text-foreground">{title}</h4>
       {children}
     </div>
   )

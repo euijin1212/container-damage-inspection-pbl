@@ -3,22 +3,21 @@ import type { ReportStatus, ReviewStatus, RiskLevel } from '@/lib/inspection-typ
 import { REPORT_META, RISK_META, STATUS_META } from '@/lib/mock-inspections'
 
 const toneClasses: Record<string, string> = {
-  destructive: 'border-destructive/30 bg-destructive/15 text-destructive',
-  warning: 'border-warning/30 bg-warning/15 text-warning',
-  info: 'border-info/30 bg-info/15 text-info',
-  success: 'border-success/30 bg-success/15 text-success',
-  muted: 'border-border bg-muted text-muted-foreground',
+  destructive: 'bg-red-50 text-red-700',
+  warning: 'bg-orange-50 text-orange-700',
+  info: 'bg-blue-50 text-blue-700',
+  success: 'bg-emerald-50 text-emerald-700',
+  muted: 'bg-slate-100 text-slate-600',
 }
 
 function Pill({ tone, children }: { tone: string; children: React.ReactNode }) {
   return (
     <span
       className={cn(
-        'inline-flex items-center gap-1.5 whitespace-nowrap rounded-md border px-2 py-0.5 font-mono text-[11px] font-medium uppercase tracking-wide',
+        'inline-flex items-center whitespace-nowrap rounded-full px-2.5 py-1 text-xs font-medium',
         toneClasses[tone],
       )}
     >
-      <span className="size-1.5 rounded-full bg-current" aria-hidden />
       {children}
     </span>
   )

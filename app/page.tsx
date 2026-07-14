@@ -1,7 +1,7 @@
 'use client'
 
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { Bell, X } from 'lucide-react'
+import { X } from 'lucide-react'
 import { DashboardHeader } from '@/components/inspection/dashboard-header'
 import { SummaryCards } from '@/components/inspection/summary-cards'
 import { InspectionTable } from '@/components/inspection/inspection-table'
@@ -171,11 +171,11 @@ export default function Page() {
   return (
     <div className="min-h-screen bg-background">
       <DashboardHeader processingCount={processingCount} />
-      <main className="mx-auto max-w-[1600px] space-y-6 px-4 py-6 lg:px-6">
-        <div>
-          <h2 className="text-lg font-semibold tracking-tight text-balance">컨테이너 검수 현황</h2>
-          <p className="text-sm text-muted-foreground">
-            현재 근무 교대의 AI 선별 컨테이너 검수 목록입니다. 고위험 촬영 건을 우선 검토하세요.
+      <main className="mx-auto max-w-[1600px] space-y-8 px-6 py-10 lg:px-8">
+        <div className="space-y-3">
+          <h2 className="text-3xl font-bold tracking-tight text-balance">컨테이너 검수 현황</h2>
+          <p className="max-w-2xl text-base text-muted-foreground">
+            AI가 선별한 컨테이너 검수 건을 확인하고 필요한 조치를 진행하세요.
           </p>
         </div>
 
@@ -183,6 +183,7 @@ export default function Page() {
 
         <InspectionTable
           inspections={inspections}
+          selectedId={selectedId}
           statusFilter={statusFilter}
           onStatusFilterChange={setStatusFilter}
           onSelect={handleSelect}
@@ -207,16 +208,12 @@ export default function Page() {
       {/* Mock new high-risk arrival notification */}
       {notification && (
         <div className="fixed bottom-4 right-4 z-50 w-[calc(100%-2rem)] max-w-sm">
-          <div className="flex items-start gap-3 rounded-lg border border-destructive/40 bg-card p-3 shadow-lg">
-            <span className="mt-0.5 flex size-8 shrink-0 items-center justify-center rounded-md bg-destructive/15 text-destructive">
-              <Bell className="size-4" aria-hidden />
-            </span>
+          <div className="flex items-start gap-3 rounded-lg bg-card p-4 shadow-sm ring-1 ring-border/70">
             <button type="button" onClick={openNotification} className="min-w-0 flex-1 text-left">
               <p className="text-sm font-medium text-foreground">새로운 고위험 검수 건이 도착했습니다.</p>
-              <p className="mt-0.5 font-mono text-xs text-muted-foreground">
+              <p className="mt-1 text-sm text-muted-foreground">
                 {notification.containerId} · 위험 점수 {notification.riskScore}
               </p>
-              <p className="mt-1 font-mono text-[11px] uppercase tracking-wide text-destructive">클릭하여 열기</p>
             </button>
             <button
               type="button"
