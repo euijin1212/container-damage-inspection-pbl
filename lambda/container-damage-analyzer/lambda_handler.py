@@ -1,16 +1,10 @@
-"""실시간 손상 분석 Lambda 핸들러.
+"""실시간 손상 분석 Lambda 핸들러 (MVP).
 
-S3(`container-damage`) 버킷에 이미지가 업로드되면 ObjectCreated 이벤트로 트리거되어,
-방금 올라온 이미지 1장을 Foundation Model(Sonnet 4.5)로 분석하고 Risk Score를 산출한 뒤,
-S3 메타데이터 · YOLO 결과 · Foundation Model 결과를 통합해 DynamoDB에 저장하고
-고위험이면 SNS로 알림한다.
-
-배포 핸들러: `lambda_handler.lambda_handler`
 
 필요 환경변수 (분석 설정은 src/config.py 참조):
   S3_BUCKET        분석 대상 버킷 (트리거 버킷과 동일)
   BEDROCK_MODEL_ID 비전 지원 모델 ID (Sonnet 4.5)
-  DDB_TABLE        결과 기록 DynamoDB 테이블명 (없으면 기록 스킵)
+  DDB_TABLE        업데이트 대상 DynamoDB 테이블명 (기본 InspectionEventTable)
   SNS_TOPIC_ARN    고위험 알림 SNS 토픽 ARN (없으면 알림 스킵)
   RISK_ALERT_LEVEL 알림 트리거 등급 (HIGH | MEDIUM, 기본 HIGH)
 """
@@ -22,12 +16,12 @@ import os
 import sys
 import traceback
 import urllib.parse
-import uuid
 from datetime import datetime, timezone
 from decimal import Decimal
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 import boto3
+from botocore.exceptions import ClientError
 
 # 공유 라이브러리(src) 경로 확보:
 #   - Lambda 배포 시: 빌드가 src/ 를 이 핸들러와 같은 위치(태스크 루트)에 번들 → 그대로 import
@@ -50,6 +44,16 @@ _sns = boto3.client("sns", region_name=settings.aws_region)
 
 _LEVEL_RANK = {"LOW": 0, "MEDIUM": 1, "HIGH": 2}
 
+# Lambda 가 처리하는 유일한 S3 프리픽스 (원본 이미지 전용)
+_RAW_PREFIX = "raw-images/"
+
+# DynamoDB 테이블 기본값
+_DEFAULT_TABLE = "InspectionEventTable"
+
+
+class ItemNotFoundError(Exception):
+    """대상 event_id 의 DynamoDB item 이 존재하지 않을 때 발생."""
+
 
 def _now_iso() -> str:
     return (
@@ -58,13 +62,39 @@ def _now_iso() -> str:
 
 
 def _to_decimal(obj):
-    """DynamoDB 는 float 를 받지 못하므로 Decimal 로 변환."""
+    """DynamoDB 는 float 를 받지 못하므로 Decimal 로 변환 (None/null 은 그대로 유지)."""
     return json.loads(json.dumps(obj), parse_float=Decimal, parse_int=Decimal)
 
 
-def _should_alert(level: str) -> bool:
+def _should_alert(level: Optional[str]) -> bool:
+    if not level:
+        return False
     threshold = os.getenv("RISK_ALERT_LEVEL", "HIGH").upper()
     return _LEVEL_RANK.get(level, 0) >= _LEVEL_RANK.get(threshold, 2)
+
+
+def extract_event_id(key: str) -> Optional[str]:
+    """S3 object key 에서 event_id 를 추출한다.
+
+    조건:
+      - `raw-images/` 프리픽스가 아니면 None (처리 대상 아님)
+      - 프리픽스 아래 하위 폴더가 더 있으면 None
+      - 이미지 확장자가 아니면 None
+      - 확장자를 제거한 파일명만 event_id 로 사용
+
+    예) "raw-images/EVT-20260713-0001.jpg" → "EVT-20260713-0001"
+    """
+    if not key.startswith(_RAW_PREFIX):
+        return None
+    filename = key[len(_RAW_PREFIX):]
+    if not filename or "/" in filename:
+        return None
+    stem, ext = os.path.splitext(filename)
+    if ext.lower() not in _IMAGE_EXTS:
+        return None
+    if not stem:
+        return None
+    return stem
 
 
 def _parse_s3_records(event: Dict) -> List[Dict[str, str]]:
@@ -81,83 +111,144 @@ def _parse_s3_records(event: Dict) -> List[Dict[str, str]]:
     return targets
 
 
-def analyze_one(bucket: str, key: str) -> Dict:
-    """이미지 1장을 분석해 검수 결과 레코드를 만든다."""
-    image = _store.download_from(bucket, key)
-    damages = _analyzer.analyze(image.body, image.image_format)
-    risk = calculate_risk(damages)
+def _build_success_update(damages, risk, model_id: str) -> Dict:
+    """분석 성공 시 UpdateItem 대상 필드(nested)를 구성한다.
 
+    구조는 mock-data/sample_completed_update.json 과 일치한다.
+    """
     detections = [
         {
-            "class": d.damage_type,
+            "damage_class": d.damage_type,
             "severity": d.severity,
-            "confidence": round(d.confidence, 3),
             "location": d.location,
-            "note": d.note,
+            "description": d.note,
         }
         for d in damages
     ]
+    confidences = [d.confidence for d in damages]
 
-    # 대표값: 가장 위험한 손상 기준
-    top = risk.components[0] if risk.components else None
-    processed_at = _now_iso()
+    review_status = (
+        "MANUAL_NEEDED" if risk.risk_level in ("HIGH", "MEDIUM") else "AUTO_OK"
+    )
     return {
-        "event_id": "evt_" + uuid.uuid4().hex[:12],
-        "event_date": processed_at[:10],
-        "processed_at": processed_at,
-        "inspection_result": "damage" if damages else "normal",
-        "confidence": max((d["confidence"] for d in detections), default=None),
-        "detection_count": len(detections),
-        "detections": detections,
-        "location": top["location"] if top else None,
-        "risk_score": round(risk.risk_score, 1),
-        "risk_level": risk.risk_level,
-        "risk_breakdown": risk.components,
-        "image_path": image.uri,
-        "image_type": "annotated" if damages else "raw",
-        "model_version": _analyzer.model_id,
-        "review_status": "MANUAL_NEEDED"
-        if risk.risk_level in ("HIGH", "MEDIUM")
-        else "AUTO_OK",
-        "notified": False,
+        "processed_at": _now_iso(),
+        "cloud_analysis": {
+            "analysis_status": "COMPLETED",
+            "model_name": model_id,
+            "inspection_result": "damage" if damages else "normal",
+            "confidence": round(max(confidences), 3) if confidences else None,
+            "detection_count": len(detections),
+            "detections": detections,
+        },
+        "risk": {
+            "risk_score": round(risk.risk_score, 1),
+            "risk_level": risk.risk_level,
+        },
+        "review_status": review_status,
     }
 
 
-def _save_to_dynamo(record: Dict) -> None:
-    table_name = os.getenv("DDB_TABLE")
-    if not table_name:
-        return
-    _ddb.Table(table_name).put_item(Item=_to_decimal(record))
+def _build_failure_update(error_message: str) -> Dict:
+    """분석 실패 시 UpdateItem 대상 필드(nested)를 구성한다.
+
+    구조는 mock-data/sample_failed_update.json 과 일치한다.
+    """
+    return {
+        "processed_at": _now_iso(),
+        "cloud_analysis": {
+            "analysis_status": "FAILED",
+            "error_message": error_message,
+        },
+        "risk": {
+            "risk_score": None,
+            "risk_level": None,
+        },
+        "review_status": "INFERENCE_FAILED",
+    }
 
 
-def _publish_alert(record: Dict) -> bool:
+def _update_dynamo(event_id: str, fields: Dict) -> bool:
+    """기존 item 의 지정 필드만 UpdateItem 으로 핀셋 업데이트한다.
+
+    - Key: {"event_id": event_id} (Sort Key 없음)
+    - ConditionExpression="attribute_exists(event_id)" 로 기존 item 이 있을 때만 갱신
+    - item 이 없으면(ConditionalCheckFailed) 새로 만들지 않고 로그만 남긴 뒤 False 반환
+    """
+    table_name = os.getenv("DDB_TABLE", _DEFAULT_TABLE)
+    table = _ddb.Table(table_name)
+
+    values = _to_decimal(fields)
+    update_expr = "SET " + ", ".join(f"#{k} = :{k}" for k in values)
+    expr_names = {f"#{k}": k for k in values}
+    expr_values = {f":{k}": v for k, v in values.items()}
+
+    try:
+        table.update_item(
+            Key={"event_id": event_id},
+            UpdateExpression=update_expr,
+            ExpressionAttributeNames=expr_names,
+            ExpressionAttributeValues=expr_values,
+            ConditionExpression="attribute_exists(event_id)",
+        )
+        return True
+    except ClientError as exc:
+        if exc.response.get("Error", {}).get("Code") == "ConditionalCheckFailedException":
+            print(
+                f"[스킵] DynamoDB에 event_id={event_id} item이 없어 업데이트하지 않음 "
+                f"(Simulator PENDING item 미생성). 새 item을 만들지 않습니다."
+            )
+            return False
+        raise
+
+
+def _publish_alert(event_id: str, risk: Dict) -> bool:
+    """고위험일 때 SNS 알림. event_id / risk_level / risk_score 중심으로 단순화."""
     topic = os.getenv("SNS_TOPIC_ARN")
-    if not topic or not _should_alert(record["risk_level"]):
+    level = risk.get("risk_level")
+    if not topic or not _should_alert(level):
         return False
     msg = (
-        f"[컨테이너 손상 경보] {record['risk_level']} (score={record['risk_score']})\n"
-        f"이미지: {record['image_path']}\n"
-        f"손상 {record['detection_count']}건: "
-        + ", ".join(f"{d['class']}/{d['severity']}" for d in record["detections"])
+        "[컨테이너 손상 경보]\n"
+        f"event_id: {event_id}\n"
+        f"risk_level: {level}\n"
+        f"risk_score: {risk.get('risk_score')}"
     )
     _sns.publish(
         TopicArn=topic,
-        Subject=f"[{record['risk_level']}] 컨테이너 손상 탐지",
+        Subject=f"[{level}] 컨테이너 손상 탐지",
         Message=msg,
     )
     return True
 
 
-def _process_target(bucket: str, key: str) -> Dict:
+def _process_target(bucket: str, key: str, event_id: str) -> Dict:
     """단일 (bucket, key) 처리. 실패해도 다른 이미지에 영향 없도록 격리."""
-    record = analyze_one(bucket, key)
-    record["notified"] = _publish_alert(record)
-    _save_to_dynamo(record)
+    # --- 분석 단계 (실패 시 FAILED 업데이트 시도 후 예외 전파) ---
+    try:
+        image = _store.download_from(bucket, key)
+        damages = _analyzer.analyze(image.body, image.image_format)
+        risk = calculate_risk(damages)
+    except Exception as exc:  # noqa: BLE001
+        print(f"[분석실패] event_id={event_id}: {exc}")
+        _update_dynamo(event_id, _build_failure_update(str(exc)))
+        raise
+
+    # --- 성공 업데이트 단계 ---
+    update = _build_success_update(damages, risk, _analyzer.model_id)
+    if not _update_dynamo(event_id, update):
+        # 분석은 성공했으나 대상 item 이 없음 → 새로 만들지 않고 에러로 처리
+        raise ItemNotFoundError(
+            f"event_id={event_id} item이 DynamoDB에 없어 업데이트를 건너뜀"
+        )
+
+    notified = _publish_alert(event_id, update["risk"])
     print(
-        f"[분석완료] {record['image_path']} → {record['risk_level']} "
-        f"(score={record['risk_score']}, detections={record['detection_count']})"
+        f"[분석완료] event_id={event_id} → {update['risk']['risk_level']} "
+        f"(score={update['risk']['risk_score']}, "
+        f"detections={update['cloud_analysis']['detection_count']}, "
+        f"notified={notified})"
     )
-    return record
+    return {"event_id": event_id, **update}
 
 
 def lambda_handler(event: Dict, context=None) -> Dict:
@@ -166,15 +257,17 @@ def lambda_handler(event: Dict, context=None) -> Dict:
 
     for target in _parse_s3_records(event):
         bucket, key = target["bucket"], target["key"]
-        if not key.lower().endswith(_IMAGE_EXTS):
-            print(f"[스킵] 이미지 아님: s3://{bucket}/{key}")
+        event_id = extract_event_id(key)
+        if event_id is None:
+            # raw-images/ 프리픽스가 아니거나 이미지가 아닌 key 는 스킵
+            print(f"[스킵] 처리 대상 아님: s3://{bucket}/{key}")
             continue
         try:
-            results.append(_process_target(bucket, key))
+            results.append(_process_target(bucket, key, event_id))
         except Exception as exc:  # noqa: BLE001 - 한 장 실패가 전체를 막지 않도록
-            print(f"[오류] s3://{bucket}/{key}: {exc}")
+            print(f"[오류] s3://{bucket}/{key} (event_id={event_id}): {exc}")
             traceback.print_exc()
-            errors.append({"key": key, "error": str(exc)})
+            errors.append({"key": key, "event_id": event_id, "error": str(exc)})
 
     return {
         "statusCode": 200 if not errors else 207,

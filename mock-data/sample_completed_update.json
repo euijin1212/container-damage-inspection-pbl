@@ -1,0 +1,23 @@
+{
+  "processed_at": "2026-07-13T11:30:08Z",
+  "cloud_analysis": {
+    "analysis_status": "COMPLETED",
+    "model_name": "bedrock-vision-model",
+    "inspection_result": "damage",
+    "confidence": 0.88,
+    "detection_count": 1,
+    "detections": [
+      {
+        "damage_class": "dent",
+        "severity": "medium",
+        "location": "right lower side",
+        "description": "컨테이너 우측 하단에 찌그러짐이 의심됩니다."
+      }
+    ]
+  },
+  "risk": {
+    "risk_score": 87,
+    "risk_level": "HIGH"
+  },
+  "review_status": "MANUAL_NEEDED"
+}

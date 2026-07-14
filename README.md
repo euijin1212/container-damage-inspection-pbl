@@ -1,190 +1,96 @@
 # Container Damage Inspection PBL
 
-## 1. 프로젝트 흐름
+컨테이너 게이트 반출입 시 촬영된 이미지에서 파손을 탐지하고,
+Foundation Model로 2차 분석하여 검수자가 확인할 대상을 선별하는 MVP 프로젝트입니다.
 
-```text
-로컬 컨테이너 이미지
--> YOLO 모델이 로컬에서 1차 파손 여부 판단
--> 파손 의심 이미지일 경우에만 S3 raw-images/ 업로드
--> YOLO 결과 JSON도 함께 저장 또는 전달
--> S3 업로드 이벤트로 Lambda 실행
--> Foundation Model이 파손 유형, 위치, 심각도 분석
--> Lambda가 YOLO 결과 + Foundation Model 결과를 통합
--> DynamoDB에 최종 InspectionEvent JSON 저장
--> Dashboard에서 검수자가 확인
--> 검수 완료 후 보고서 생성
-```
+> 포트폴리오용 MVP 단계입니다. 데이터 구조는 당장 구현에 필요한 최소 필드만 유지합니다.
 
 ---
 
-## 2. 폴더 구조
+## 1. 최종 흐름
+
+```text
+Simulator
+  → DynamoDB PutItem(PENDING)
+  → S3 PutObject(raw image)
+  → Lambda (S3 raw-images/ 트리거)
+  → Foundation Model
+  → DynamoDB UpdateItem
+  → Dashboard
+```
+
+1. Simulator가 기본 이벤트 정보를 생성하고, 내부에서 YOLO 모델을 실행한다.
+2. YOLO가 파손 여부, bbox, confidence를 생성한다.
+3. YOLO가 `DAMAGE_SUSPECTED`로 판단한 경우에만 DynamoDB에 PENDING item을 먼저 저장한다.
+4. S3 `raw-images/{event_id}.jpg`에 원본 이미지만 업로드한다.
+5. S3 업로드 이벤트로 Lambda가 실행되고, S3 key에서 `event_id`를 추출한다.
+6. Lambda가 Foundation Model 분석 후 기존 item을 `UpdateItem`으로 핀셋 업데이트한다.
+7. Dashboard는 `review_status = MANUAL_NEEDED`인 item만 검수 큐에 표시한다.
+
+---
+
+## 2. 구성요소 역할
+
+| 구성요소 | 역할 |
+|---|---|
+| Simulator | 기본 이벤트 정보 생성, 내부 YOLO 실행, DynamoDB PutItem(PENDING), S3 원본 이미지 업로드 |
+| YOLO 모델 | 파손 여부 1차 판단, bbox / confidence 생성 (Simulator 내부에서 실행) |
+| S3 | 원본 이미지 저장 (`raw-images/`) 및 Lambda 트리거 소스 |
+| Lambda | S3 key에서 `event_id` 추출, Foundation Model 호출, DynamoDB UpdateItem |
+| Foundation Model | 파손 유형 / 위치 / 심각도 분석 |
+| DynamoDB | 이벤트 상태와 분석 결과 저장 (`InspectionEventTable`) |
+| Dashboard | `MANUAL_NEEDED` item 검수 큐 표시 |
+
+---
+
+## 3. 저장 원칙
+
+- **S3는 이미지만 저장한다.** 필수 경로는 `container-damage/raw-images/{event_id}.jpg` 하나다.
+  - S3 metadata는 사용하지 않는다.
+  - YOLO 결과 JSON(edge-results)은 S3에 저장하지 않는다.
+  - `annotated-images/`는 선택 기능, `reports/`는 추후 기능으로만 고려한다.
+- **DynamoDB는 상태와 분석 결과를 저장한다.**
+  - Simulator가 PENDING item을 PutItem 하고, Lambda가 분석 결과를 UpdateItem 한다.
+
+---
+
+## 4. 문서 / 데이터
+
+- 상세 스키마: [docs/data-schema.md](docs/data-schema.md)
+- 인프라 리소스: [infra/aws-resources.md](infra/aws-resources.md)
+- 예시 JSON: [mock-data/](mock-data/)
+
+| mock-data 파일 | 설명 |
+|---|---|
+| `sample_pending_item.json` | Simulator가 PutItem 하는 최소 PENDING item |
+| `sample_completed_update.json` | Lambda 성공 시 UpdateItem 필드 |
+| `sample_failed_update.json` | Lambda 실패 시 UpdateItem 필드 |
+
+---
+
+## 5. 폴더 구조
 
 ```text
 container-damage-inspection-pbl/
-├─ README.md                         # 프로젝트 폴더 구조와 JSON 필드 통일 문서
-├─ .gitignore                        # AWS 키, 모델 가중치, 환경변수 제외 설정
-├─ .env.example                      # 환경변수 템플릿
-├─ requirements.txt                  # 파이썬 의존성 (boto3 등)
+├─ README.md
+├─ requirements.txt
 ├─ build_lambda.ps1                  # analyzer Lambda 배포 zip 생성 스크립트
-│
-├─ docs/                             # 설계 문서
-│  ├─ architecture.md                # AWS 전체 아키텍처 정리
-│  └─ data-schema.md                 # DynamoDB JSON 구조 정리
-│
-├─ edge-yolo/                        # 로컬 YOLO 1차 파손 판단 (Layer 1, 이준수)
-│  ├─ infer.py                       # YOLO로 이미지 추론, bbox/confidence 출력
-│  ├─ upload_to_s3.py                # 파손 의심 이미지와 결과 JSON을 S3로 업로드
-│  ├─ config.py                      # threshold, bucket name, prefix 등 설정
-│  ├─ weights/                       # YOLO 모델 가중치 (GitHub 업로드 X)
-│  ├─ input_images/                  # 테스트용 원본 컨테이너 이미지 (업로드 X)
-│  ├─ output_results/                # YOLO 추론 결과 JSON, bbox 시각화 결과
-│  └─ sample_events/                 # 테스트용 edge 결과 JSON
-│
-├─ lambda/                           # AWS Lambda 코드 (Layer 2)
-│  ├─ container-damage-analyzer/     # ★ S3 업로드 시 실행되는 실시간 분석 Lambda (구현 완료)
-│  │  └─ lambda_handler.py           # S3 이미지 → FM 분석 → Risk Score → DynamoDB 저장 + SNS
-│  ├─ image_processor/               # (플레이스홀더) analyzer 와 역할 중복 — 통합 대상
-│  │  └─ handler.py
-│  ├─ dashboard_api/                 # (플레이스홀더) 대시보드 API — 검수 큐 조회·승인/수정/반려
-│  │  └─ handler.py
-│  └─ report_generator/              # (플레이스홀더) Bedrock 일일 보고서 생성
-│     └─ handler.py
-│
-├─ src/                              # 클라우드 공유 분석 라이브러리 (analyzer Lambda 가 사용)
-│  ├─ bedrock_analyzer.py            # Bedrock(Sonnet 4.5) 비전 모델로 손상 유형/정도 판정
-│  ├─ risk_score.py                  # Risk Score 계산 (구멍 ≥ 찌그러짐 > 녹슴)
-│  ├─ s3_client.py                   # S3 이미지 조회/다운로드
-│  ├─ config.py                      # 리전/버킷/모델ID/가중치/임계값 설정
-│  └─ __init__.py
-│
-├─ dashboard/                        # 검수자 대시보드 (Layer 3, 정의진)
-│  └─ README.md                      # 대시보드 실행 방법, 화면 구성 정리
-│
-├─ mock-data/                        # 팀원 간 JSON 필드명 통일용 샘플
-│  ├─ sample_edge_result.json        # YOLO 로컬 추론 결과 예시
-│  ├─ sample_cloud_result.json       # Foundation Model 분석 결과 예시
-│  └─ sample_dynamodb_item.json      # DynamoDB 최종 저장 item 예시
-│
-└─ infra/                            # AWS 리소스 설정 메모
-   └─ aws-resources.md               # S3, DynamoDB, Lambda, Bedrock 리소스 이름 정리
-```
-
-> **구현 상태:** `lambda/container-damage-analyzer` + `src/` 만 실제 동작하는 코드이며,
-> 나머지 `lambda/*` 핸들러와 `edge-yolo/`, `mock-data/` 파일은 팀 저장소의 플레이스홀더(빈 파일)다.
-> `lambda/image_processor` 는 analyzer 와 역할이 겹치므로 하나로 통합 예정.
----
-
-## 3. JSON 데이터 흐름
-
-전체 JSON을 처음부터 S3에 올리는 구조가 아니다.
-
-```text
-1. YOLO가 로컬에서 이미지 분석
-2. 파손 의심이면 이미지 S3 업로드
-3. YOLO 결과 JSON도 함께 저장 또는 전달
-4. Lambda가 S3 metadata와 YOLO 결과를 읽음
-5. Lambda가 Foundation Model을 호출
-6. Foundation Model이 파손 유형, 위치, 심각도, 설명 생성
-7. Lambda가 최종 JSON을 만들어 DynamoDB에 저장
+├─ docs/
+│  ├─ architecture.md
+│  └─ data-schema.md                 # DynamoDB item 구조 (MVP)
+├─ edge-yolo/                        # 로컬/시뮬레이터 YOLO 추론
+├─ lambda/
+│  └─ container-damage-analyzer/     # S3 트리거 분석 Lambda
+├─ src/                              # 클라우드 분석 공유 라이브러리
+├─ dashboard/                        # 검수자 대시보드
+├─ mock-data/                        # JSON 필드 통일용 샘플
+└─ infra/
+   └─ aws-resources.md               # AWS 리소스 명세
 ```
 
 ---
 
-## 4. S3 저장 기준
-
-```text
-raw-images/
-└─ 파손 의심 원본 이미지 저장
-
-edge-results/
-└─ YOLO 로컬 추론 결과 JSON 저장
-
-reports/
-└─ 검수 완료 후 생성된 보고서 저장
-```
-
-예시:
-
-```text
-raw-images/EVT-20260709-0001.jpg
-edge-results/EVT-20260709-0001.json
-reports/EVT-20260709-0001.json
-```
-
----
-
-## 5. S3 metadata 기준
-
-이미지 업로드 시 S3 metadata에는 작은 기본 정보만 넣는다.
-
-```text
-event-id
-container-id
-gate-id
-vehicle-no
-captured-at
-direction
-edge-status
-upload-reason
-edge-confidence
-edge-result-key
-```
-
-예시:
-
-```text
-event-id: EVT-20260709-0001
-container-id: MSCU1234567
-gate-id: GATE-01
-vehicle-no: BUSAN-1234
-captured-at: 2026-07-09T14:32:00Z
-direction: IN
-edge-status: DAMAGE_SUSPECTED
-upload-reason: EDGE_DAMAGE_DETECTED
-edge-confidence: 0.82
-edge-result-key: edge-results/EVT-20260709-0001.json
-```
-
----
-
-## 6. 상태값 통일
-
-### edge_status
-
-| 값 | 의미 |
-|---|---|
-| DAMAGE_SUSPECTED | YOLO가 파손 의심으로 판단 |
-| NORMAL | YOLO가 정상으로 판단 |
-
-### upload_reason
-
-| 값 | 의미 |
-|---|---|
-| EDGE_DAMAGE_DETECTED | YOLO가 파손 의심으로 판단해 클라우드 업로드 |
-| EDGE_AUTO_OK | YOLO가 정상으로 판단해 업로드하지 않음 |
-
-### review_status
-
-| 값 | 의미 |
-|---|---|
-| MANUAL_NEEDED | 검수자 확인 필요 |
-| DONE | 검수 완료 |
-| INFERENCE_FAILED | 클라우드 분석 실패 |
-
-### report_status
-
-| 값 | 의미 |
-|---|---|
-| NOT_CREATED | 보고서 생성 전 |
-| PENDING | 보고서 생성 중 |
-| CREATED | 보고서 생성 완료 |
-| FAILED | 보고서 생성 실패 |
-
----
-
-## 7. 분석 Lambda 배포
-
-분석 Lambda(`lambda/container-damage-analyzer`)는 `src/` 를 함께 묶어 배포한다.
+## 6. 분석 Lambda 배포
 
 ```powershell
 # 1) 배포 패키지 생성 → lambda_deploy.zip (생성물, git 추적 안 함)
@@ -193,8 +99,4 @@ edge-result-key: edge-results/EVT-20260709-0001.json
 # 2) AWS 콘솔에서 container-damage-analyzer 에 lambda_deploy.zip 업로드
 #    - 핸들러: lambda_handler.lambda_handler
 #    - 타임아웃 90초 / 메모리 512MB
-#    - 환경변수: S3_BUCKET, BEDROCK_MODEL_ID, DDB_TABLE, SNS_TOPIC_ARN, RISK_ALERT_LEVEL
 ```
-
-> `lambda_deploy.zip` 은 `build_lambda.ps1` 이 만드는 **일회성 산출물**이라 저장소에 두지 않는다
-> (`.gitignore` 처리). **코드를 수정하면 `build_lambda.ps1` 로 다시 만들어 재업로드**하면 된다.
