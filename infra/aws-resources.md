@@ -1,124 +1,251 @@
-# AWS 인프라 리소스 명세서 (Container Damage Inspection MVP)
+# AWS 인프라 리소스 명세서
 
-> **공통 설정**
-> * **기본 리전:** 서울 (`ap-northeast-2`)
+기본 리전은 **서울(`ap-northeast-2`)** 입니다.
 
-최종 데이터 흐름:
+## 1. API Gateway
+
+현재 API ID:
 
 ```text
-Simulator → DynamoDB PutItem(PENDING) → S3 PutObject(raw image)
-  → Lambda → Foundation Model → DynamoDB UpdateItem → Dashboard
+7tevpqwqmj
 ```
 
----
+기본 URL:
 
-## 1. Amazon S3 (오브젝트 스토리지)
+```text
+https://7tevpqwqmj.execute-api.ap-northeast-2.amazonaws.com
+```
 
-| 버킷명 | 용도 | 비고 |
-| :--- | :--- | :--- |
-| **`container-damage`** | 원본 컨테이너 이미지 저장 | Analyzer Lambda의 트리거 소스 |
+권장 route 구성:
 
-### S3 저장 기준
+| Method | Path | Integration |
+|---|---|---|
+| POST | `/inspection-events` | Lambda `inspection-event-ingest` |
+| GET | `/inspections` | Lambda `dashboard_api` |
+| GET | `/inspections/{event_id}` | Lambda `dashboard_api` |
+| POST | `/inspections/{event_id}/review` | Lambda `dashboard_api` |
+| GET | `/inspections/{event_id}/report` | Lambda `dashboard_api` |
 
-* **필수 prefix:** `raw-images/`
-  * 경로 규칙: `container-damage/raw-images/{event_id}.jpg`
-  * 예: `container-damage/raw-images/EVT-20260713-0001.jpg`
-  * 이미지 파일명은 `event_id`와 동일하게 맞춘다.
-* **S3에는 원본 이미지만 저장한다.**
-* **사용하지 않는 것 (MVP):**
-  * S3 metadata 사용 **X**
-  * YOLO 결과 JSON(`edge-results/`) 저장 **X**
-* **선택/추후 기능:**
-  * `annotated-images/` : 선택 기능
-  * `reports/` : 추후 기능
+사진 파일은 API Gateway 요청 body로 보내지 않습니다. `POST /inspection-events`는 메타데이터만 받고, 이미지 업로드는 S3 presigned URL로 직접 수행합니다.
 
-⚠️ **무한 루프 주의:** Lambda 분석 결과 이미지(어노테이션 등)를 원본 트리거 버킷의 `raw-images/` 접두사에 다시 저장하면 트리거가 재실행되어 무한 루프가 발생할 수 있습니다. 결과물은 별도 버킷이나 트리거가 제외된 접두사(`annotated-images/` 등)에만 저장합니다.
+## 2. S3
 
----
+| 항목 | 값 |
+|---|---|
+| 버킷 | `container-damage` |
+| 원본 이미지 prefix | `raw-images/` |
+| 리포트 prefix | `reports/` |
 
-## 2. Amazon DynamoDB (NoSQL 데이터베이스)
+이미지 key 규칙:
 
-컨테이너 파손 이벤트를 저장하는 메인 테이블입니다.
+```text
+raw-images/{event_id}.jpg
+raw-images/{event_id}.png
+raw-images/{event_id}.webp
+```
 
-* **테이블명:** `InspectionEventTable`
-* **Partition Key (PK):** `event_id` (String) — 이벤트 고유 식별자 (예: `EVT-20260713-0001`)
-* **Sort Key (SK):** 없음
-* **과금:** 온디맨드(PAY_PER_REQUEST) 권장
+S3 trigger:
 
-### 쓰기 주체
+```text
+Event type: ObjectCreated
+Prefix: raw-images/
+Target Lambda: container-damage-analyzer
+```
 
-| 주체 | 동작 | 설명 |
-| :--- | :--- | :--- |
-| **Simulator** | `PutItem` | YOLO가 `DAMAGE_SUSPECTED`로 판단하면, S3 이미지 업로드 **전에** PENDING item을 먼저 저장 |
-| **Lambda** | `UpdateItem` | 기존 item을 덮어쓰지 않고 아래 필드만 핀셋 업데이트 |
+## 3. DynamoDB
 
-### Lambda 핀셋 업데이트 대상 필드
+| 항목 | 값 |
+|---|---|
+| 테이블 | `InspectionEventTable` |
+| PK | `event_id` (String) |
+| Billing | On-demand 권장 |
 
-* `processed_at`
-* `cloud_analysis`
-* `risk`
-* `review_status`
+권장 GSI:
 
-> 상세 필드 정의는 [../docs/data-schema.md](../docs/data-schema.md), 샘플은 [../mock-data/](../mock-data/) 참조.
+```text
+Index name: ReviewStatusIndex
+Partition key: review_status
+Sort key: event_date
+```
 
----
+GSI가 없으면 `dashboard_api`는 Scan fallback을 사용할 수 있지만, 포트폴리오/운영 구조로는 GSI를 두는 편이 좋습니다.
 
-## 3. AWS Lambda (서버리스 컴퓨팅)
+## 4. Lambda
 
-S3 `raw-images/`에 이미지가 업로드되면 실행되어, 이미지를 Bedrock으로 분석하고 결과를 DynamoDB에 UpdateItem 합니다.
+### `inspection-event-ingest`
 
-* **함수명:** `container-damage-analyzer`
-* **핸들러:** `lambda_handler.lambda_handler`
-* **트리거:** S3 `ObjectCreated` 이벤트 (`container-damage` 버킷, prefix `raw-images/`)
+트리거:
 
-### 처리 규칙
+```text
+API Gateway POST /inspection-events
+```
 
-* Lambda는 `event_id`를 새로 생성하지 **않는다**.
-* Lambda는 **S3 key에서 `event_id`를 추출**한다. (예: `raw-images/EVT-20260713-0001.jpg` → `EVT-20260713-0001`)
-* Lambda는 DynamoDB에 새 item을 `PutItem` 하지 않고, 기존 item을 `UpdateItem` 한다.
+역할:
 
-### 환경 변수 (Environment Variables)
-* `S3_BUCKET`: 처리 대상 S3 버킷명 (`container-damage`)
-* `BEDROCK_MODEL_ID`: 호출할 Bedrock 모델 ID
-* `DDB_TABLE`: DynamoDB 테이블명 (`InspectionEventTable`)
-* `SNS_TOPIC_ARN`: 위험도 초과 시 알림을 보낼 SNS 토픽 ARN
-* `RISK_ALERT_LEVEL`: 알림 발송 기준 위험 등급 (예: `HIGH`)
+```text
+1. 요청 JSON 검증
+2. DynamoDB PutItem(PENDING)
+3. S3 presigned PUT URL 발급
+4. upload_url 반환
+```
 
-### 리소스 설정 및 IAM 권한
-* **타임아웃:** `90초` 권장 (Bedrock API 응답 시간 고려)
-* **메모리:** `512MB` 권장
-* **필수 IAM 정책:**
-  * `s3:GetObject` (트리거 버킷 읽기)
-  * `bedrock:InvokeModel` (AI 모델 호출)
-  * `dynamodb:UpdateItem` (기존 item 핀셋 업데이트)
-  * `sns:Publish` (고위험 알림 발송)
+코드 위치:
 
-> Simulator 측(로컬/시뮬레이터)에는 별도로 `dynamodb:PutItem`, `s3:PutObject` 권한이 필요합니다.
+```text
+lambda/inspection-event-ingest/handler.py
+```
 
----
+배포 패키지:
 
-## 4. Amazon Bedrock (생성형 AI 서비스)
+```powershell
+.\build_ingest_lambda.ps1
+```
 
-이미지 비전 분석을 담당하는 Foundation Model입니다.
+필수 안전장치:
 
-* **사용 모델:** Claude Sonnet 4.5
-* **모델 ID:** `apac.anthropic.claude-sonnet-4-5-20250929-v1:0`
-* 💡 **사전 준비:** AWS 콘솔의 **[Bedrock → Model access]** 메뉴에서 해당 모델 사용 권한을 미리 활성화해야 API 호출이 가능합니다.
+```python
+ConditionExpression="attribute_not_exists(event_id)"
+```
 
----
+환경변수:
 
-## 5. Amazon SNS (알림)
+```text
+DDB_TABLE=InspectionEventTable
+S3_BUCKET=container-damage
+UPLOAD_EXPIRES=900
+CORS_ORIGIN=*
+```
 
-Risk Score가 임계 등급(`RISK_ALERT_LEVEL`, 기본 `HIGH`) 이상일 때 관리자에게 이메일 알림을 발송합니다.
+필수 IAM:
 
-* **토픽명:** `container-damage-alert` (가칭)
-* **구독:** 이메일 프로토콜 → 구독 후 메일함에서 **Confirm** 필수
-* **발송 주체:** Analyzer Lambda (`SNS_TOPIC_ARN` 환경변수로 지정)
+```text
+dynamodb:PutItem
+s3:PutObject
+```
 
----
+### `container-damage-analyzer`
 
-## 6. Amazon CloudWatch (모니터링)
+트리거:
 
-* Lambda 실행 로그 그룹: `/aws/lambda/container-damage-analyzer`
-* 확인 포인트: 분석 완료 로그, 에러/타임아웃, 처리 지연
-* 로그 그룹은 함수가 **최초 실행될 때 자동 생성**된다.
+```text
+S3 ObjectCreated, prefix raw-images/
+```
+
+핸들러:
+
+```text
+lambda_handler.lambda_handler
+```
+
+환경변수:
+
+```text
+AWS_REGION=ap-northeast-2
+BEDROCK_REGION=ap-northeast-2
+BEDROCK_MODEL_ID=apac.anthropic.claude-sonnet-4-5-20250929-v1:0
+DDB_TABLE=InspectionEventTable
+S3_BUCKET=container-damage
+SNS_TOPIC_ARN=선택
+RISK_ALERT_LEVEL=HIGH
+```
+
+필수 IAM:
+
+```text
+s3:GetObject
+dynamodb:GetItem
+dynamodb:UpdateItem
+bedrock:InvokeModel
+sns:Publish          # SNS 사용 시
+```
+
+### `dashboard_api`
+
+트리거:
+
+```text
+API Gateway /inspections*
+```
+
+핸들러:
+
+```text
+handler.lambda_handler
+```
+
+환경변수:
+
+```text
+DDB_TABLE=InspectionEventTable
+REVIEW_STATUS_INDEX=ReviewStatusIndex
+S3_BUCKET=container-damage
+PRESIGN_EXPIRES=3600
+CORS_ORIGIN=*
+```
+
+필수 IAM:
+
+```text
+dynamodb:GetItem
+dynamodb:Query
+dynamodb:Scan
+dynamodb:UpdateItem
+dynamodb:DeleteItem
+s3:GetObject
+s3:HeadObject
+s3:DeleteObject
+```
+
+### `report_generator`
+
+트리거:
+
+```text
+DynamoDB Stream 또는 직접 호출
+```
+
+핸들러:
+
+```text
+handler.lambda_handler
+```
+
+환경변수:
+
+```text
+DDB_TABLE=InspectionEventTable
+REPORT_BUCKET=container-damage
+REPORT_PREFIX=reports/
+BEDROCK_MODEL_ID=apac.anthropic.claude-sonnet-4-5-20250929-v1:0
+```
+
+필수 IAM:
+
+```text
+dynamodb:GetItem
+dynamodb:UpdateItem
+s3:PutObject
+bedrock:InvokeModel
+```
+
+## 5. Dashboard Frontend
+
+위치:
+
+```text
+dashboard/
+```
+
+환경변수:
+
+```text
+NEXT_PUBLIC_API_BASE=https://7tevpqwqmj.execute-api.ap-northeast-2.amazonaws.com
+```
+
+실행:
+
+```powershell
+cd dashboard
+npm ci
+npm run dev
+```

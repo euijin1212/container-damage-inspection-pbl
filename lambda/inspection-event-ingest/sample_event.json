@@ -1,0 +1,8 @@
+{
+  "requestContext": {
+    "http": {
+      "method": "POST"
+    }
+  },
+  "body": "{\"event_id\":\"EVT-TEST-001\",\"event_date\":\"2026-07-14\",\"captured_at\":\"2026-07-14T18:30:00Z\",\"container_id\":\"MSCU1234567\",\"gate_id\":\"GATE-01\",\"camera_id\":\"CAM-01\",\"edge_model\":\"YOLOv8\",\"edge_confidence\":0.82,\"edge_detections\":[{\"damage_class\":\"damage\",\"confidence\":0.82,\"bbox\":{\"x_min\":412,\"y_min\":288,\"x_max\":580,\"y_max\":411}}],\"image_content_type\":\"image/jpeg\"}"
+}

@@ -1,70 +1,94 @@
 # 아키텍처 (AWS 전체 흐름)
 
-엣지 1차 판단(YOLO) + 클라우드 재분석(Foundation Model) 구조의 MVP.
-전 리소스 리전은 **서울(`ap-northeast-2`)** 로 통일한다.
-
-## 최종 흐름 한 줄
-
-```text
-Simulator → DynamoDB PutItem(PENDING) → S3 PutObject(raw image)
-  → Lambda → Foundation Model → DynamoDB UpdateItem → Dashboard
-```
+엣지 1차 판단(YOLO) + 클라우드 2차 분석(Foundation Model) + 검수자 대시보드 구조의 MVP입니다.
+전 리소스 리전은 **서울(`ap-northeast-2`)** 로 통일합니다.
 
 ## 전체 흐름
 
 ```text
-[Layer 1] Simulator + 엣지 YOLO (edge-yolo/)
-    - Simulator가 기본 이벤트 정보 생성 (event_id, container, source, image 등)
-    - Simulator 내부에서 YOLO 모델 실행 → 파손 여부, bbox, confidence 생성
-    - DAMAGE_SUSPECTED인 경우에만:
-        1) DynamoDB(InspectionEventTable)에 PENDING item을 먼저 PutItem
-        2) S3(container-damage)의 raw-images/{event_id}.jpg 에 원본 이미지만 업로드
-        │
-        ▼  S3 ObjectCreated 이벤트 (prefix raw-images/)
-[Layer 2] 클라우드 분석 (lambda/container-damage-analyzer + src/)
-    - S3 이벤트로 Lambda 자동 트리거
-    - S3 key에서 event_id 추출 (새로 생성하지 않음)
-    - src/s3_client        : 방금 올라온 이미지 다운로드
-    - src/bedrock_analyzer : Sonnet 4.5로 손상 유형(hole/dent/rust)·정도(low/med/high) 판정
-    - src/risk_score       : Risk Score 계산 (구멍 ≥ 찌그러짐 > 녹슴)
-    - DynamoDB(InspectionEventTable) 기존 item을 UpdateItem으로 핀셋 업데이트
-      (processed_at, cloud_analysis, risk, review_status)
-    - 고위험(HIGH) → SNS 알림
-    - CloudWatch에 처리 로그
-        │
-        ▼
-[Layer 3] 관리자 서비스 (dashboard/, lambda/dashboard_api, lambda/report_generator)
-    - 대시보드: review_status = MANUAL_NEEDED 인 item만 검수 큐 표시 (dashboard_api)  ※ 예정
-    - Bedrock 일일 리포트 자동 생성 (report_generator)                              ※ 예정
+YOLO Simulator
+ ├─ 1) POST /inspection-events ──> API Gateway ──> inspection-event-ingest
+ │                                                       ├─ DynamoDB PutItem(PENDING)
+ │                                                       └─ S3 presigned upload URL 반환
+ │
+ └─ 2) PUT image bytes ────────────────────────────────> S3 raw-images/{event_id}.jpg
+                                                           │
+                                                           ▼
+                                                 container-damage-analyzer
+                                                           │
+                                                           ├─ S3 이미지 다운로드
+                                                           ├─ Bedrock Foundation Model 분석
+                                                           ├─ Risk Score 계산
+                                                           └─ DynamoDB UpdateItem
+
+Next.js Dashboard
+ └─ GET/POST /inspections ──> API Gateway ──> dashboard_api ──> DynamoDB/S3
+
+DynamoDB Stream(review_status=DONE)
+ └─ report_generator ──> Bedrock 보고서 초안 ──> PDF ──> S3 reports/
 ```
 
-## 구성요소별 책임
+## 중요한 설계 원칙
 
-| 계층 | 위치 | 책임 | 상태 |
+사진 파일은 API Gateway를 거치지 않습니다.
+
+| 데이터 | 이동 경로 | 이유 |
+|---|---|---|
+| 이벤트 메타데이터, YOLO bbox/confidence | API Gateway → ingest Lambda | 작은 JSON, 인증/검증/DB 생성 처리 |
+| 원본 이미지 파일 | Simulator → S3 presigned URL | 대용량 파일은 S3 직접 업로드가 비용/속도/제한 면에서 적합 |
+
+## API Gateway
+
+API Gateway는 하나를 사용합니다. route에 따라 Lambda integration만 다릅니다.
+
+| Method | Path | Lambda | 역할 |
 |---|---|---|---|
-| Simulator + YOLO | `edge-yolo/` | 이벤트 생성, YOLO 추론, PutItem(PENDING), 이미지 업로드 | 예정(플레이스홀더) |
-| 분석 Lambda | `lambda/container-damage-analyzer/` | FM 재분석 + Risk Score + UpdateItem | **구현 완료** |
-| 공유 로직 | `src/` | 분석기·스코어·S3·설정 | **구현 완료** |
-| 대시보드 API | `lambda/dashboard_api/` | 검수 큐/승인 처리 | 예정 |
-| 리포트 | `lambda/report_generator/` | Bedrock 일일 리포트 | 예정 |
+| POST | `/inspection-events` | `inspection-event-ingest` | 이벤트 접수, PENDING item 생성, upload URL 발급 |
+| GET | `/inspections` | `dashboard_api` | 검수 목록 조회 |
+| GET | `/inspections/{event_id}` | `dashboard_api` | 단건 상세 조회 |
+| POST | `/inspections/{event_id}/review` | `dashboard_api` | 승인/수정/반려 처리 |
+| GET | `/inspections/{event_id}/report` | `dashboard_api` | 보고서 상태/URL 조회 |
 
-## 사용 AWS 서비스
+## Lambda 역할
 
-| 서비스 | 용도 |
-|---|---|
-| S3 | 원본 이미지 버킷 `container-damage` (`raw-images/`, Lambda 트리거 소스) |
-| Lambda | 분석/대시보드 API/리포트 |
-| Bedrock | Claude Sonnet 4.5 손상 재분석 |
-| DynamoDB | 이벤트 상태·분석 결과 저장 `InspectionEventTable` |
-| SNS | 고위험 알림 |
-| CloudWatch | Lambda 로그·모니터링 |
-| API Gateway | 대시보드 API 프론트 (예정) |
+| Lambda | 트리거 | 책임 | 상태 |
+|---|---|---|---|
+| `inspection-event-ingest` | API Gateway `POST /inspection-events` | DynamoDB PENDING item 생성, S3 presigned URL 발급 | 구현 완료 |
+| `container-damage-analyzer` | S3 `ObjectCreated` (`raw-images/`) | Bedrock 분석, risk 계산, DynamoDB 업데이트 | 구현 완료 |
+| `dashboard_api` | API Gateway `/inspections*` | 대시보드 조회/검수/삭제/Presigned read URL | 구현 완료 |
+| `report_generator` | DynamoDB Streams 또는 직접 호출 | PDF 리포트 생성 및 S3 저장 | 구현 완료 |
 
-## 주의사항
+## DynamoDB 상태 흐름
 
-- **S3에는 원본 이미지만 저장한다.** S3 metadata와 edge-results JSON은 MVP에서 사용하지 않는다.
-- **무한 루프 방지:** 분석 결과 이미지를 트리거 접두사(`raw-images/`)에 되쓰지 말 것.
-  결과물은 별도 버킷 또는 트리거 제외 접두사(`annotated-images/` 등)에 저장.
-- **분석 Lambda 설정:** 타임아웃 **90초 이상**, 메모리 **512MB 이상** (Bedrock 응답 대기).
-- **Bedrock 모델 ID:** 서울 리전은 추론 프로파일 필요 —
-  `apac.anthropic.claude-sonnet-4-5-20250929-v1:0` (또는 `global.` 접두사).
+```text
+PENDING_CLOUD_ANALYSIS
+  → MANUAL_NEEDED      # HIGH/MEDIUM 위험도
+  → AUTO_OK            # LOW 위험도
+  → INFERENCE_FAILED   # Bedrock/S3/분석 실패
+  → DONE               # 검수 승인/수정 완료
+  → 삭제               # 검수 반려(reject)
+```
+
+보고서 상태는 `report.report_status`로 관리합니다.
+
+```text
+NOT_CREATED → PENDING → CREATED
+                         └→ FAILED
+```
+
+## 비동기 이벤트
+
+API Gateway를 거치지 않는 내부 자동화입니다.
+
+```text
+S3 ObjectCreated(raw-images/) → container-damage-analyzer
+DynamoDB Stream(DONE)        → report_generator
+```
+
+## 안전장치
+
+- `container-damage-analyzer`는 `attribute_exists(event_id)` 조건으로 기존 item만 업데이트합니다.
+- 분석 전 `review_status=PENDING_CLOUD_ANALYSIS` 및 `cloud_analysis.analysis_status=PENDING`인지 확인합니다.
+- S3 이벤트 중복 전달 시 이미 처리된 item은 skip합니다.
+- `inspection-event-ingest` 구현 시 `PutItem`에 `ConditionExpression="attribute_not_exists(event_id)"`를 넣어야 합니다.
+- 분석 결과 이미지를 `raw-images/`에 다시 저장하지 않습니다.
