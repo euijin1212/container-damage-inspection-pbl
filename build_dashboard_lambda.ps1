@@ -1,8 +1,10 @@
+# 대시보드 API Lambda(dashboard_api) 배포 패키지(zip) 생성 스크립트
 $ErrorActionPreference = "Stop"
 $root = $PSScriptRoot
-$build = Join-Path $root "build"
-$zip = Join-Path $root "lambda_deploy.zip"
-$handler = Join-Path $root "lambda\container-damage-analyzer\lambda_handler.py"
+$build = Join-Path $root "build_dashboard"
+$zip = Join-Path $root "dashboard_lambda_deploy.zip"
+$handler = Join-Path $root "lambda\dashboard_api\handler.py"
+
 if (Test-Path $build) { Remove-Item $build -Recurse -Force }
 if (Test-Path $zip) { Remove-Item $zip -Force }
 New-Item -ItemType Directory -Path $build | Out-Null

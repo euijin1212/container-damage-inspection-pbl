@@ -1,0 +1,63 @@
+{
+  "Records": [
+    {
+      "eventID": "test-0001",
+      "eventName": "MODIFY",
+      "eventSource": "aws:dynamodb",
+      "awsRegion": "ap-northeast-2",
+      "dynamodb": {
+        "Keys": {
+          "event_id": { "S": "EVT-20260713-0001" }
+        },
+        "OldImage": {
+          "event_id": { "S": "EVT-20260713-0001" },
+          "review_status": { "S": "MANUAL_NEEDED" }
+        },
+        "NewImage": {
+          "event_id": { "S": "EVT-20260713-0001" },
+          "event_date": { "S": "2026-07-13" },
+          "captured_at": { "S": "2026-07-13T11:30:00Z" },
+          "processed_at": { "S": "2026-07-13T11:30:08Z" },
+          "container": {
+            "M": {
+              "container_id": { "S": "MSCU1234567" }
+            }
+          },
+          "cloud_analysis": {
+            "M": {
+              "analysis_status": { "S": "COMPLETED" },
+              "model_name": { "S": "apac.anthropic.claude-sonnet-4-5-20250929-v1:0" },
+              "inspection_result": { "S": "damage" },
+              "confidence": { "N": "0.88" },
+              "detection_count": { "N": "2" },
+              "detections": {
+                "L": [
+                  { "M": {
+                    "damage_class": { "S": "hole" },
+                    "severity": { "S": "high" },
+                    "location": { "S": "하-우" },
+                    "description": { "S": "관통성 구멍" }
+                  } },
+                  { "M": {
+                    "damage_class": { "S": "dent" },
+                    "severity": { "S": "medium" },
+                    "location": { "S": "중-좌" },
+                    "description": { "S": "찌그러짐" }
+                  } }
+                ]
+              }
+            }
+          },
+          "risk": {
+            "M": {
+              "risk_score": { "N": "90.5" },
+              "risk_level": { "S": "HIGH" }
+            }
+          },
+          "review_status": { "S": "DONE" }
+        },
+        "StreamViewType": "NEW_AND_OLD_IMAGES"
+      }
+    }
+  ]
+}

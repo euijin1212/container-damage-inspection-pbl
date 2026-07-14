@@ -78,6 +78,10 @@ class Settings:
         "BEDROCK_MODEL_ID", "apac.anthropic.claude-sonnet-4-5-20250929-v1:0"
     )
 
+    # Bedrock Knowledge Base (보고서 RAG). 비우면 RAG 없이 동작
+    knowledge_base_id: str = os.getenv("KNOWLEDGE_BASE_ID", "")
+    kb_max_results: int = int(_get_float("KB_MAX_RESULTS", 4))
+
     # Risk Score - 손상 유형별 가중치 (구멍 >= 찌그러짐 > 녹슴)
     type_weights: Dict[str, float] = field(
         default_factory=lambda: {

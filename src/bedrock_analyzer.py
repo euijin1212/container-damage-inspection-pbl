@@ -76,6 +76,8 @@ _PROMPT = """당신은 항만 컨테이너 외관 검수 전문가입니다.
   ]
 }
 
+이미지에 표시된 기존 bounding box 구역만 분석하세요.
+새 구역을 만들지 말고, 표시된 박스 안의 손상 유형/정도만 판정하세요.
 손상이 없다고 판단되면 "damages": [] 로 반환하세요.
 """
 
@@ -119,6 +121,20 @@ def _parse_damages(payload: dict) -> List[DamageItem]:
             confidence = float(raw.get("confidence", 1.0))
         except (TypeError, ValueError):
             confidence = 1.0
+
+        box = None
+        bbox_pct = raw.get("bbox_pct") or raw.get("box")
+        if isinstance(bbox_pct, dict):
+            try:
+                x = float(bbox_pct.get("x", 0))
+                y = float(bbox_pct.get("y", 0))
+                w = float(bbox_pct.get("width", 0))
+                h = float(bbox_pct.get("height", 0))
+                if w > 0 and h > 0:
+                    box = {"x": x, "y": y, "width": w, "height": h}
+            except (TypeError, ValueError):
+                box = None
+
         items.append(
             DamageItem(
                 damage_type=dtype,
@@ -126,6 +142,7 @@ def _parse_damages(payload: dict) -> List[DamageItem]:
                 confidence=confidence,
                 location=raw.get("location"),
                 note=raw.get("note"),
+                box=box,
             )
         )
     return items

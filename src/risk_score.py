@@ -32,6 +32,8 @@ class DamageItem:
     confidence: float = 1.0     # 0.0 ~ 1.0
     location: Optional[str] = None
     note: Optional[str] = None
+    # 이미지 대비 퍼센트 bbox (대시보드 확대/오버레이용)
+    box: Optional[Dict[str, float]] = None
 
 
 @dataclass

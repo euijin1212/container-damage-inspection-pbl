@@ -111,20 +111,104 @@ def _parse_s3_records(event: Dict) -> List[Dict[str, str]]:
     return targets
 
 
-def _build_success_update(damages, risk, model_id: str) -> Dict:
+def _build_image_meta(
+    bucket: str, key: str, width: Optional[int] = None, height: Optional[int] = None
+) -> Dict:
+    """실제 S3 객체 키를 DynamoDB image 에 동기화한다 (.jpg/.png 불일치 방지)."""
+    meta = {
+        "bucket": bucket,
+        "raw_image_key": key,
+    }
+    if width and height:
+        meta["width"] = int(width)
+        meta["height"] = int(height)
+    return meta
+
+
+def _image_size(body: bytes, image_format: str) -> tuple:
+    """JPEG/PNG 헤더에서 (width, height) 추출. 실패 시 (None, None)."""
+    try:
+        fmt = (image_format or "").lower()
+        if fmt in ("jpeg", "jpg") and body[:2] == b"\xff\xd8":
+            i = 2
+            while i < len(body) - 8:
+                if body[i] != 0xFF:
+                    i += 1
+                    continue
+                marker = body[i + 1]
+                if marker in (0xC0, 0xC1, 0xC2):  # SOF
+                    h = int.from_bytes(body[i + 5 : i + 7], "big")
+                    w = int.from_bytes(body[i + 7 : i + 9], "big")
+                    return w, h
+                if marker == 0xD9:
+                    break
+                length = int.from_bytes(body[i + 2 : i + 4], "big")
+                i += 2 + length
+        if fmt == "png" and body[:8] == b"\x89PNG\r\n\x1a\n":
+            w = int.from_bytes(body[16:20], "big")
+            h = int.from_bytes(body[20:24], "big")
+            return w, h
+    except Exception:  # noqa: BLE001
+        pass
+    return None, None
+
+
+def _pixel_bbox_to_pct(bbox: Dict, img_w: Optional[int], img_h: Optional[int]) -> Optional[Dict]:
+    try:
+        x_min = float(bbox["x_min"])
+        y_min = float(bbox["y_min"])
+        x_max = float(bbox["x_max"])
+        y_max = float(bbox["y_max"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    if not img_w or not img_h or x_max <= x_min or y_max <= y_min:
+        return None
+    return {
+        "x": round(x_min / img_w * 100.0, 2),
+        "y": round(y_min / img_h * 100.0, 2),
+        "width": round((x_max - x_min) / img_w * 100.0, 2),
+        "height": round((y_max - y_min) / img_h * 100.0, 2),
+    }
+
+
+def _build_success_update(
+    damages,
+    risk,
+    model_id: str,
+    bucket: str,
+    key: str,
+    *,
+    edge_detections: Optional[List] = None,
+    img_w: Optional[int] = None,
+    img_h: Optional[int] = None,
+) -> Dict:
     """분석 성공 시 UpdateItem 대상 필드(nested)를 구성한다.
 
     구조는 mock-data/sample_completed_update.json 과 일치한다.
+    YOLO edge bbox 를 그대로 detection.box(퍼센트)에 연결한다.
     """
-    detections = [
-        {
+    edge_detections = edge_detections or []
+    detections = []
+    for i, d in enumerate(damages):
+        det = {
             "damage_class": d.damage_type,
             "severity": d.severity,
             "location": d.location,
             "description": d.note,
+            "confidence": round(float(d.confidence), 3),
         }
-        for d in damages
-    ]
+        # 원래 YOLO 박스만 사용 (새로 만들지 않음)
+        if d.box:
+            det["box"] = d.box
+        elif edge_detections:
+            edge_d = edge_detections[i % len(edge_detections)]
+            if isinstance(edge_d, dict) and isinstance(edge_d.get("bbox"), dict):
+                pct = _pixel_bbox_to_pct(edge_d["bbox"], img_w, img_h)
+                if pct:
+                    det["box"] = pct
+                else:
+                    det["bbox"] = edge_d["bbox"]
+        detections.append(det)
     confidences = [d.confidence for d in damages]
 
     review_status = (
@@ -145,10 +229,11 @@ def _build_success_update(damages, risk, model_id: str) -> Dict:
             "risk_level": risk.risk_level,
         },
         "review_status": review_status,
+        "image": _build_image_meta(bucket, key, img_w, img_h),
     }
 
 
-def _build_failure_update(error_message: str) -> Dict:
+def _build_failure_update(error_message: str, bucket: str, key: str) -> Dict:
     """분석 실패 시 UpdateItem 대상 필드(nested)를 구성한다.
 
     구조는 mock-data/sample_failed_update.json 과 일치한다.
@@ -164,6 +249,7 @@ def _build_failure_update(error_message: str) -> Dict:
             "risk_level": None,
         },
         "review_status": "INFERENCE_FAILED",
+        "image": _build_image_meta(bucket, key),
     }
 
 
@@ -173,19 +259,26 @@ def _update_dynamo(event_id: str, fields: Dict) -> bool:
     - Key: {"event_id": event_id} (Sort Key 없음)
     - ConditionExpression="attribute_exists(event_id)" 로 기존 item 이 있을 때만 갱신
     - item 이 없으면(ConditionalCheckFailed) 새로 만들지 않고 로그만 남긴 뒤 False 반환
+    - `report` 속성이 아직 없으면 `report_status=NOT_CREATED`(미생성)로 초기화한다
+      (이미 CREATED/PENDING 등이면 덮어쓰지 않음)
     """
     table_name = os.getenv("DDB_TABLE", _DEFAULT_TABLE)
     table = _ddb.Table(table_name)
 
     values = _to_decimal(fields)
-    update_expr = "SET " + ", ".join(f"#{k} = :{k}" for k in values)
+    set_parts = [f"#{k} = :{k}" for k in values]
     expr_names = {f"#{k}": k for k in values}
     expr_values = {f":{k}": v for k, v in values.items()}
+
+    # 보고서 메타가 없으면 미생성으로 초기화 (기존 report 값은 유지)
+    set_parts.append("#report = if_not_exists(#report, :report_init)")
+    expr_names["#report"] = "report"
+    expr_values[":report_init"] = {"report_status": "NOT_CREATED"}
 
     try:
         table.update_item(
             Key={"event_id": event_id},
-            UpdateExpression=update_expr,
+            UpdateExpression="SET " + ", ".join(set_parts),
             ExpressionAttributeNames=expr_names,
             ExpressionAttributeValues=expr_values,
             ConditionExpression="attribute_exists(event_id)",
@@ -230,11 +323,33 @@ def _process_target(bucket: str, key: str, event_id: str) -> Dict:
         risk = calculate_risk(damages)
     except Exception as exc:  # noqa: BLE001
         print(f"[분석실패] event_id={event_id}: {exc}")
-        _update_dynamo(event_id, _build_failure_update(str(exc)))
+        _update_dynamo(event_id, _build_failure_update(str(exc), bucket, key))
         raise
 
+    img_w, img_h = _image_size(image.body, image.image_format)
+
+    # 기존 item 의 YOLO edge bbox 를 가져와 detection 에 연결
+    edge_detections: List = []
+    try:
+        table_name = os.getenv("DDB_TABLE", _DEFAULT_TABLE)
+        existing = _ddb.Table(table_name).get_item(Key={"event_id": event_id}).get("Item")
+        if existing:
+            edge = existing.get("edge") or {}
+            edge_detections = list(edge.get("edge_detections") or [])
+    except Exception as exc:  # noqa: BLE001
+        print(f"[경고] edge bbox 조회 실패 event_id={event_id}: {exc}")
+
     # --- 성공 업데이트 단계 ---
-    update = _build_success_update(damages, risk, _analyzer.model_id)
+    update = _build_success_update(
+        damages,
+        risk,
+        _analyzer.model_id,
+        bucket,
+        key,
+        edge_detections=edge_detections,
+        img_w=img_w,
+        img_h=img_h,
+    )
     if not _update_dynamo(event_id, update):
         # 분석은 성공했으나 대상 item 이 없음 → 새로 만들지 않고 에러로 처리
         raise ItemNotFoundError(
