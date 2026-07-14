@@ -15,6 +15,7 @@
 
 검수 승인(approve/modify → review_status=DONE) 시 DynamoDB Streams 가
 report_generator 를 트리거해 EIR PDF 를 자동 생성한다.
+검수 반려(reject) 시 관련 S3 객체와 DynamoDB item 을 삭제한다.
 
 필요 환경변수:
   DDB_TABLE              테이블명 (기본 InspectionEventTable)
@@ -561,8 +562,55 @@ def get_report(event_id: str) -> Dict:
     )
 
 
+def _collect_s3_targets(item: Dict) -> List[Tuple[str, str]]:
+    """반려 시 삭제할 S3 (bucket, key) 목록을 item 에서 수집한다."""
+    targets: List[Tuple[str, str]] = []
+    image = item.get("image") or {}
+    bucket = image.get("bucket") or _bucket()
+    for field in ("raw_image_key", "annotated_image_key", "image_key"):
+        key = image.get(field)
+        if key:
+            targets.append((bucket, str(key)))
+
+    report = item.get("report") or {}
+    rb, rk = _report_key_from_path(report.get("report_path"))
+    if rk:
+        targets.append((rb or bucket, rk))
+
+    event_id = item.get("event_id")
+    if event_id:
+        # 관례 경로도 함께 시도 (없어도 delete 는 no-op 수준)
+        targets.append((bucket, f"reports/{event_id}.pdf"))
+        for ext in (".jpg", ".jpeg", ".png", ".webp"):
+            targets.append((bucket, f"raw-images/{event_id}{ext}"))
+
+    # 중복 제거 (순서 유지)
+    seen = set()
+    unique: List[Tuple[str, str]] = []
+    for b, k in targets:
+        pair = (b, k)
+        if pair in seen:
+            continue
+        seen.add(pair)
+        unique.append(pair)
+    return unique
+
+
+def _delete_s3_objects(targets: List[Tuple[str, str]]) -> List[str]:
+    deleted: List[str] = []
+    for bucket, key in targets:
+        try:
+            _s3.delete_object(Bucket=bucket, Key=key)
+            uri = f"s3://{bucket}/{key}"
+            deleted.append(uri)
+            print(f"[reject] S3 삭제: {uri}")
+        except ClientError as exc:
+            print(f"[reject] S3 삭제 실패 s3://{bucket}/{key}: {exc}")
+    return deleted
+
+
 def review_inspection(event_id: str, body: Dict) -> Dict:
-    """검수 처리. approve/modify → DONE (보고서 트리거). reject → REJECTED."""
+    """검수 처리. approve/modify → DONE (보고서 트리거). reject → S3+DynamoDB 삭제."""
     if not event_id:
         return _response(400, {"error": "event_id required"})
 
@@ -583,41 +631,54 @@ def review_inspection(event_id: str, body: Dict) -> Dict:
     now = _now_iso()
 
     if action == "reject":
-        new_status = "REJECTED"
-        update_expr = (
-            "SET review_status = :rs, reviewer = :rv, review_memo = :memo, "
-            "reviewed_at = :at"
+        native = _to_native(existing)
+        s3_deleted = _delete_s3_objects(_collect_s3_targets(native))
+        try:
+            table.delete_item(
+                Key={"event_id": event_id},
+                ConditionExpression="attribute_exists(event_id)",
+            )
+        except ClientError as exc:
+            if exc.response.get("Error", {}).get("Code") == "ConditionalCheckFailedException":
+                return _response(404, {"error": "not found", "event_id": event_id})
+            raise
+        print(
+            f"[review] event_id={event_id} action=reject → DELETED "
+            f"(s3={len(s3_deleted)})"
         )
-        values: Dict[str, Any] = {
-            ":rs": new_status,
-            ":rv": reviewer,
-            ":memo": memo,
-            ":at": now,
-        }
-        names = None
-    else:
-        # approve / modify → DONE
-        new_status = "DONE"
-        update_expr = (
-            "SET review_status = :rs, reviewer = :rv, review_memo = :memo, "
-            "reviewed_at = :at"
+        return _response(
+            200,
+            {
+                "ok": True,
+                "action": "reject",
+                "event_id": event_id,
+                "deleted": True,
+                "s3_deleted": s3_deleted,
+            },
         )
-        values = {
-            ":rs": new_status,
-            ":rv": reviewer,
-            ":memo": memo,
-            ":at": now,
-        }
-        names = None
 
-        # modify: risk_level 변경 (risk map 부분 갱신)
-        if action == "modify" and body.get("risk_level"):
-            level = str(body["risk_level"]).upper()
-            if level not in ("HIGH", "MEDIUM", "LOW"):
-                return _response(400, {"error": "risk_level must be HIGH|MEDIUM|LOW"})
-            update_expr += ", #risk.#rl = :rl"
-            names = {"#risk": "risk", "#rl": "risk_level"}
-            values[":rl"] = level
+    # approve / modify → DONE
+    new_status = "DONE"
+    update_expr = (
+        "SET review_status = :rs, reviewer = :rv, review_memo = :memo, "
+        "reviewed_at = :at"
+    )
+    values: Dict[str, Any] = {
+        ":rs": new_status,
+        ":rv": reviewer,
+        ":memo": memo,
+        ":at": now,
+    }
+    names = None
+
+    # modify: risk_level 변경 (risk map 부분 갱신)
+    if action == "modify" and body.get("risk_level"):
+        level = str(body["risk_level"]).upper()
+        if level not in ("HIGH", "MEDIUM", "LOW"):
+            return _response(400, {"error": "risk_level must be HIGH|MEDIUM|LOW"})
+        update_expr += ", #risk.#rl = :rl"
+        names = {"#risk": "risk", "#rl": "risk_level"}
+        values[":rl"] = level
 
     try:
         kwargs: Dict[str, Any] = {
