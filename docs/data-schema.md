@@ -78,7 +78,6 @@ Simulator
 | `edge.edge_model` | S | 추론 모델명 (예: `YOLOv8`) |
 | `edge.edge_confidence` | N | 대표 탐지 신뢰도 |
 | `edge.edge_detections[].damage_class` | S | 탐지된 손상 클래스 |
-| `edge.edge_detections[].confidence` | N | 개별 탐지 신뢰도 |
 | `edge.edge_detections[].bbox` | M | `{x_min, y_min, x_max, y_max}` |
 
 ---
@@ -95,6 +94,7 @@ Lambda는 기존 item 전체를 덮어쓰지 않고, 아래 필드만 `UpdateIte
 | `cloud_analysis.inspection_result` | 🟧 | S | 최종 검사 결과 (예: `damage`) |
 | `cloud_analysis.confidence` | 🟧 | N | 대표 신뢰도 |
 | `cloud_analysis.detection_count` | 🟧 | N | 손상 개수 |
+| `cloud.analysis_detections[].confidence` | N | 손상 유형 분석 신뢰도 |
 | `cloud_analysis.detections[].damage_class` | 🟧 | S | 손상 유형 |
 | `cloud_analysis.detections[].severity` | 🟧 | S | 손상 정도 |
 | `cloud_analysis.detections[].location` | 🟧 | S | 손상 위치 |
