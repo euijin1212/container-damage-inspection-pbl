@@ -1,34 +1,33 @@
-# 검수자 대시보드 (Layer 3)
+# container-inspection-dashboard-i7
 
-관리자가 검수 결과를 조회하고 승인/수정/반려하며, Bedrock 일일 리포트를 확인하는 화면.
-(구현 예정 — 담당: 정의진)
+This is a [Next.js](https://nextjs.org) project bootstrapped with [v0](https://v0.app).
 
-## 데이터 소스
+## Built with v0
 
-- **검수 큐 / 상세 / 검수 처리**: `lambda/dashboard_api` (API Gateway 뒤) → DynamoDB `container-inspection`
-- **일일 리포트**: `lambda/report_generator` → Bedrock 요약 결과
-- **이미지**: S3 `container-damage`
+This repository is linked to a [v0](https://v0.app) project. You can continue developing by visiting the link below -- start new chats to make changes, and v0 will push commits directly to this repo. Every merge to `main` will automatically deploy.
 
-## 화면 구성 (안)
+[Continue working on v0 →](https://v0.app/chat/projects/prj_IMHYHmb4fht9Ak2rnCMKhAQpL3HR)
 
-1. **검수 큐**: `review_status = MANUAL_NEEDED` 목록 (위험도 높은 순)
-2. **상세**: 저장 이미지 + `detections`(유형/정도/신뢰도) + `risk_score` / `risk_level`
-3. **검수 처리**: 승인(approve) / 수정(modify: risk_level 변경) / 반려(reject)
-4. **일일 리포트 뷰어**: 날짜 선택 → Bedrock 리포트 표시
+## Getting Started
 
-## dashboard_api (예정)
-
-| 메서드 | 경로 | 설명 |
-|---|---|---|
-| GET | `/inspections?status=MANUAL_NEEDED&date=2026-07-13` | 검수 큐 조회 |
-| GET | `/inspections/{event_id}` | 단건 상세 |
-| POST | `/inspections/{event_id}/review` | 승인/수정/반려 (body: `{action, risk_level?, reviewer, memo}`) |
-
-## 실행 (예: Streamlit)
+First, run the development server:
 
 ```bash
-pip install streamlit boto3
-streamlit run app.py     # app.py 는 추후 구현
+npm run dev
+# or
+yarn dev
+# or
+pnpm dev
 ```
 
-> 5일 일정에서는 React보다 Streamlit + boto3 조합이 빠르다. 인증이 필요하면 Cognito를 선택 적용.
+Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+
+You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+
+## Learn More
+
+To learn more, take a look at the following resources:
+
+- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
+- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+- [v0 Documentation](https://v0.app/docs) - learn about v0 and how to use it.

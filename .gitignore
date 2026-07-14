@@ -24,6 +24,7 @@ lambda_deploy.zip
 
 # ===== Python =====
 __pycache__/
+.pytest_cache/
 *.py[cod]
 *.egg-info/
 .venv/
