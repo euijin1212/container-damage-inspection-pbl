@@ -54,10 +54,16 @@ Simulator → DynamoDB PutItem(PENDING) → S3 PutObject(raw image)
 
 ### Lambda 핀셋 업데이트 대상 필드
 
+**Analyzer**
 * `processed_at`
 * `cloud_analysis`
 * `risk`
 * `review_status`
+
+**Report Generator**
+* `report` (중첩 객체: `report_status` / `report_path` / `reuse_decision` 등)
+
+> `report.report_status`: `NOT_CREATED`(미생성) → `PENDING`(생성중) → `CREATED`(생성완료) / `FAILED`(생성실패)
 
 > 상세 필드 정의는 [../docs/data-schema.md](../docs/data-schema.md), 샘플은 [../mock-data/](../mock-data/) 참조.
 

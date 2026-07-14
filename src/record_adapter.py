@@ -1,6 +1,6 @@
-"""record_adapter.py — MVP DynamoDB item → 보고서 모듈용 flat dict 변환.
+"""record_adapter.py — MVP DynamoDB item → 보고서 계층용 flat dict 변환.
 
-MVP 스키마는 `container`, `cloud_analysis`, `risk` 등 중첩 구조를 사용한다.
+MVP 스키마는 `container`, `cloud_analysis`, `risk`, `report` 등 중첩 구조를 사용한다.
 `report_writer` / `pdf_report` 는 내부적으로 flat dict 를 사용하므로,
 이 모듈에서 한 번 정규화한다.
 """
@@ -8,6 +8,12 @@ MVP 스키마는 `container`, `cloud_analysis`, `risk` 등 중첩 구조를 사�
 from __future__ import annotations
 
 from typing import Dict, List, Optional
+
+# 보고서 생성 상태 (report.report_status)
+REPORT_NOT_CREATED = "NOT_CREATED"  # 미생성
+REPORT_PENDING = "PENDING"          # 생성중
+REPORT_CREATED = "CREATED"          # 생성완료
+REPORT_FAILED = "FAILED"            # 생성실패
 
 
 def _first_location(detections: List[Dict]) -> Optional[str]:
@@ -73,3 +79,38 @@ def get_report_status(record: Dict) -> Optional[str]:
     """MVP `report.report_status` 또는 legacy `report_status` 를 읽는다."""
     report = record.get("report") or {}
     return report.get("report_status") or record.get("report_status")
+
+
+def initial_report_meta() -> Dict:
+    """PutItem/분석 완료 시점에 넣는 보고서 초기 메타 (미생성)."""
+    return {"report_status": REPORT_NOT_CREATED}
+
+
+def pending_report_meta() -> Dict:
+    """보고서 생성 시작 시 메타 (생성중)."""
+    return {"report_status": REPORT_PENDING}
+
+
+def created_report_meta(
+    *,
+    report_path: str,
+    generated_at: str,
+    reuse_decision: str = "",
+    report_summary: str = "",
+) -> Dict:
+    """보고서 생성 완료 시 메타."""
+    return {
+        "report_status": REPORT_CREATED,
+        "report_path": report_path,
+        "report_generated_at": generated_at,
+        "reuse_decision": reuse_decision,
+        "report_summary": report_summary,
+    }
+
+
+def failed_report_meta(error_message: str) -> Dict:
+    """보고서 생성 실패 시 메타."""
+    return {
+        "report_status": REPORT_FAILED,
+        "error_message": (error_message or "")[:500],
+    }

@@ -173,19 +173,26 @@ def _update_dynamo(event_id: str, fields: Dict) -> bool:
     - Key: {"event_id": event_id} (Sort Key 없음)
     - ConditionExpression="attribute_exists(event_id)" 로 기존 item 이 있을 때만 갱신
     - item 이 없으면(ConditionalCheckFailed) 새로 만들지 않고 로그만 남긴 뒤 False 반환
+    - `report` 속성이 아직 없으면 `report_status=NOT_CREATED`(미생성)로 초기화한다
+      (이미 CREATED/PENDING 등이면 덮어쓰지 않음)
     """
     table_name = os.getenv("DDB_TABLE", _DEFAULT_TABLE)
     table = _ddb.Table(table_name)
 
     values = _to_decimal(fields)
-    update_expr = "SET " + ", ".join(f"#{k} = :{k}" for k in values)
+    set_parts = [f"#{k} = :{k}" for k in values]
     expr_names = {f"#{k}": k for k in values}
     expr_values = {f":{k}": v for k, v in values.items()}
+
+    # 보고서 메타가 없으면 미생성으로 초기화 (기존 report 값은 유지)
+    set_parts.append("#report = if_not_exists(#report, :report_init)")
+    expr_names["#report"] = "report"
+    expr_values[":report_init"] = {"report_status": "NOT_CREATED"}
 
     try:
         table.update_item(
             Key={"event_id": event_id},
-            UpdateExpression=update_expr,
+            UpdateExpression="SET " + ", ".join(set_parts),
             ExpressionAttributeNames=expr_names,
             ExpressionAttributeValues=expr_values,
             ConditionExpression="attribute_exists(event_id)",

@@ -37,5 +37,8 @@
     "risk_score": null,
     "risk_level": null
   },
-  "review_status": "PENDING_CLOUD_ANALYSIS"
+  "review_status": "PENDING_CLOUD_ANALYSIS",
+  "report": {
+    "report_status": "NOT_CREATED"
+  }
 }

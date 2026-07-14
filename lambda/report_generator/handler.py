@@ -5,23 +5,27 @@
     DynamoDB(검수 상태 변경) → Streams → 이 Lambda → Bedrock(초안) →
     PDF 렌더 → S3(reports/, 최종 EIR) → DynamoDB(보고서 메타 업데이트)
 
+report.report_status 전이
+-------------------------
+  NOT_CREATED(미생성) → PENDING(생성중) → CREATED(생성완료)
+                                       └→ FAILED(생성실패)
+
 동작
 ----
 검수자가 대시보드에서 검수를 마쳐 item 의 `review_status` 가 `DONE` 으로 바뀌면,
 DynamoDB Streams 가 이 Lambda 를 트리거한다. Lambda 는 해당 item 으로 EIR 보고서를
-Bedrock 으로 작성하고 PDF 로 만들어 S3 에 저장한 뒤, 원본 item 의 보고서 메타
-필드(`report_status`, `report_path`, `report_generated_at`, `reuse_decision`)를
-갱신한다.
+Bedrock 으로 작성하고 PDF 로 만들어 S3 에 저장한 뒤, 원본 item 의 `report` 중첩
+객체를 갱신한다.
 
 멱등성
 ------
-`report_status` 가 이미 `CREATED`/`PENDING` 이면 재생성하지 않는다(중복 트리거·
-스트림 재처리 방지).
+`report.report_status` 가 이미 `CREATED`/`PENDING` 이면 재생성하지 않는다
+(중복 트리거·스트림 재처리 방지). `FAILED` 는 재시도 가능.
 
 배포 핸들러: `handler.lambda_handler`
 
 필요 환경변수:
-  DDB_TABLE        검수 이벤트 테이블명 (보고서 메타 업데이트 대상, 필수)
+  DDB_TABLE        검수 이벤트 테이블명 (기본 InspectionEventTable)
   REPORT_BUCKET    PDF 저장 버킷 (없으면 S3_BUCKET 사용)
   REPORT_PREFIX    PDF 키 프리픽스 (기본 "reports/")
   BEDROCK_MODEL_ID 보고서 생성 모델 ID (src/config.py 기본값)
@@ -50,7 +54,16 @@ for _p in (_HERE, os.path.abspath(os.path.join(_HERE, "..", ".."))):
 
 from src.config import settings  # noqa: E402
 from src.pdf_report import build_report_pdf  # noqa: E402
-from src.record_adapter import get_report_status  # noqa: E402
+from src.record_adapter import (  # noqa: E402
+    REPORT_CREATED,
+    REPORT_FAILED,
+    REPORT_NOT_CREATED,
+    REPORT_PENDING,
+    created_report_meta,
+    failed_report_meta,
+    get_report_status,
+    pending_report_meta,
+)
 from src.report_writer import BedrockReportWriter  # noqa: E402
 
 # 콜드스타트 시 1회 초기화하여 호출 간 재사용
@@ -61,10 +74,12 @@ _deserializer = TypeDeserializer()
 
 _DEFAULT_TABLE = "InspectionEventTable"
 
-# 보고서를 이미 만들었거나 만드는 중이면 재생성하지 않는다.
-_SKIP_REPORT_STATUS = {"CREATED", "PENDING"}
+# 생성중/생성완료면 재생성하지 않는다 (FAILED·NOT_CREATED 는 재시도 허용)
+_SKIP_REPORT_STATUS = {REPORT_CREATED, REPORT_PENDING}
 # 이 값으로 review_status 가 바뀌었을 때만 보고서를 생성한다.
 _TRIGGER_REVIEW_STATUS = "DONE"
+# 재시도 가능한 보고서 상태
+_RETRYABLE_REPORT_STATUS = {None, "", REPORT_NOT_CREATED, REPORT_FAILED}
 
 
 def _now_iso() -> str:
@@ -95,14 +110,19 @@ def _deserialize_image(image: Optional[Dict]) -> Dict:
 def _should_generate(new_img: Dict, old_img: Dict) -> bool:
     """보고서 생성 트리거 조건.
 
-    검수가 방금 완료(DONE)됐고, 아직 보고서가 만들어지지 않은 경우에만 True.
+    - review_status 가 DONE 일 것
+    - report_status 가 CREATED/PENDING 이 아닐 것 (생성중·완료면 스킵)
+    - 이미 DONE 이었던 item 은 NOT_CREATED/FAILED/없음 일 때만 생성(재시도)
     """
     if new_img.get("review_status") != _TRIGGER_REVIEW_STATUS:
         return False
-    if get_report_status(new_img) in _SKIP_REPORT_STATUS:
+
+    status = get_report_status(new_img)
+    if status in _SKIP_REPORT_STATUS:
         return False
+
     already_done = old_img.get("review_status") == _TRIGGER_REVIEW_STATUS
-    if already_done and get_report_status(new_img) not in (None, "", "NOT_CREATED", "FAILED"):
+    if already_done and status not in _RETRYABLE_REPORT_STATUS:
         return False
     return True
 
@@ -121,6 +141,10 @@ def _update_report_meta(ddb_key: Dict, report_fields: Dict) -> None:
         print("[report] 스트림 Keys 없음 → 메타 업데이트 스킵")
         return
 
+    status = report_fields.get("report_status", "?")
+    print(
+        f"[report_status] event_id={ddb_key.get('event_id')} → {status}"
+    )
     _ddb.Table(table_name).update_item(
         Key=ddb_key,
         UpdateExpression="SET #report = :report",
@@ -130,44 +154,53 @@ def _update_report_meta(ddb_key: Dict, report_fields: Dict) -> None:
 
 
 def generate_report(record: Dict, ddb_key: Dict) -> Dict:
-    """검수 레코드 1건으로 보고서를 생성·저장하고 메타를 갱신한다."""
+    """검수 레코드 1건으로 보고서를 생성·저장하고 report_status 를 갱신한다.
+
+    전이: NOT_CREATED/없음 → PENDING → CREATED (실패 시 FAILED)
+    """
     bucket = os.getenv("REPORT_BUCKET") or settings.s3_bucket
     key = _report_key(record)
+    event_id = record.get("event_id")
 
-    _update_report_meta(
-        ddb_key,
-        {"report_status": "PENDING"},
-    )
+    # 1) 생성중
+    _update_report_meta(ddb_key, pending_report_meta())
 
-    report = _writer.write(record)
-    pdf_bytes = build_report_pdf(record, report)
+    try:
+        draft = _writer.write(record)
+        pdf_bytes = build_report_pdf(record, draft)
 
-    _s3.put_object(
-        Bucket=bucket,
-        Key=key,
-        Body=pdf_bytes,
-        ContentType="application/pdf",
-    )
-    report_path = f"s3://{bucket}/{key}"
-    generated_at = _now_iso()
+        _s3.put_object(
+            Bucket=bucket,
+            Key=key,
+            Body=pdf_bytes,
+            ContentType="application/pdf",
+        )
+        report_path = f"s3://{bucket}/{key}"
+        generated_at = _now_iso()
 
-    _update_report_meta(
-        ddb_key,
-        {
-            "report_status": "CREATED",
+        # 2) 생성완료
+        _update_report_meta(
+            ddb_key,
+            created_report_meta(
+                report_path=report_path,
+                generated_at=generated_at,
+                reuse_decision=draft.get("reuse_decision", ""),
+                report_summary=draft.get("summary", ""),
+            ),
+        )
+        print(
+            f"[보고서생성] {event_id} → {report_path} "
+            f"(reuse={draft.get('reuse_decision')}, status={REPORT_CREATED})"
+        )
+        return {
+            "event_id": event_id,
             "report_path": report_path,
-            "report_generated_at": generated_at,
-            "reuse_decision": report.get("reuse_decision", ""),
-            "report_summary": report.get("summary", ""),
-        },
-    )
-    print(f"[보고서생성] {record.get('event_id')} → {report_path} "
-          f"(reuse={report.get('reuse_decision')})")
-    return {
-        "event_id": record.get("event_id"),
-        "report_path": report_path,
-        "reuse_decision": report.get("reuse_decision"),
-    }
+            "report_status": REPORT_CREATED,
+            "reuse_decision": draft.get("reuse_decision"),
+        }
+    except Exception:
+        # 3) 생성실패 — 호출측에서 로깅/집계. 여기서는 status 만 FAILED 로 남긴다.
+        raise
 
 
 def lambda_handler(event: Dict, context=None) -> Dict:
@@ -197,9 +230,9 @@ def lambda_handler(event: Dict, context=None) -> Dict:
             traceback.print_exc()
             errors.append({"event_id": new_img.get("event_id"), "error": str(exc)})
             try:
-                _update_report_meta(ddb_key, {"report_status": "FAILED"})
-            except Exception:  # noqa: BLE001
-                pass
+                _update_report_meta(ddb_key, failed_report_meta(str(exc)))
+            except Exception as meta_exc:  # noqa: BLE001
+                print(f"[report_status FAILED 기록 실패] {meta_exc}")
 
     return {
         "statusCode": 200 if not errors else 207,

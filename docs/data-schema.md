@@ -15,6 +15,7 @@ Container Damage Inspection MVP의 DynamoDB item 구조 정의 문서입니다.
 | 🟩 | YOLO 모델 | Simulator 내부에서 실행되는 추론 결과 |
 | 🟧 | Lambda + Foundation Model | 클라우드 분석 결과 |
 | 🟥 | Lambda | 위험도 계산 / 상태값 |
+| 🟪 | report_generator | 보고서 생성 상태 / PDF 메타 |
 
 ---
 
@@ -108,18 +109,34 @@ Lambda는 기존 item 전체를 덮어쓰지 않고, 아래 필드만 `UpdateIte
 
 ---
 
-## 6-1. 보고서 메타 필드 (`report` 중첩 객체)
+## 6-1. 🟪 보고서 메타 필드 (`report` 중첩 객체)
 
-검수 완료(`review_status = DONE`) 시 DynamoDB Streams로 트리거되는
-`lambda/report_generator`가 EIR PDF를 만든 뒤 `report` 객체를 UpdateItem 한다.
+Simulator PutItem 시점에 `report` 객체를 함께 넣고,
+검수 완료(`review_status = DONE`) 후 `report_generator`가 상태를 갱신한다.
 
-| 필드 | 타입 | 설명 |
+| 필드 | 색 | 타입 | 설명 |
+|---|---|---|---|
+| `report.report_status` | 🟪 | S | 보고서 생성 상태 (아래 표준값) |
+| `report.report_path` | 🟪 | S | PDF S3 경로 (`s3://.../reports/<event_id>.pdf`) |
+| `report.report_generated_at` | 🟪 | S | 보고서 생성 완료 시각 (ISO 8601) |
+| `report.reuse_decision` | 🟪 | S | `USABLE` \| `REPAIR_NEEDED` \| `REJECT` |
+| `report.report_summary` | 🟪 | S | 보고서 요약 (대시보드 미리보기용) |
+
+### `report.report_status` 표준값
+
+| 값 | 한글 의미 | 언제 |
 |---|---|---|
-| `report.report_status` | S | `NOT_CREATED` \| `PENDING` \| `CREATED` \| `FAILED` |
-| `report.report_path` | S | PDF S3 경로 (`s3://.../reports/<event_id>.pdf`) |
-| `report.report_generated_at` | S | 보고서 생성 완료 시각 (ISO 8601) |
-| `report.reuse_decision` | S | `USABLE` \| `REPAIR_NEEDED` \| `REJECT` |
-| `report.report_summary` | S | 보고서 요약 (대시보드 미리보기용) |
+| `NOT_CREATED` | 미생성 | PutItem 직후 초기값. 아직 보고서 없음 |
+| `PENDING` | 생성중 | report_generator가 PDF 작성을 시작한 직후 |
+| `CREATED` | 생성완료 | PDF 저장·메타 갱신까지 성공 |
+| `FAILED` | 생성실패 | Bedrock/S3/PDF 등 생성 과정 실패 |
+
+상태 전이:
+
+```text
+NOT_CREATED  →  PENDING(생성중)  →  CREATED(생성완료)
+                              └→  FAILED(생성실패)
+```
 
 예시는 [../mock-data/sample_report_update.json](../mock-data/sample_report_update.json) 참조.
 
@@ -154,7 +171,8 @@ Simulator가 YOLO 결과가 `DAMAGE_SUSPECTED`인 경우, S3 이미지 업로드
   },
   "cloud_analysis": { "analysis_status": "PENDING" },
   "risk": { "risk_score": null, "risk_level": null },
-  "review_status": "PENDING_CLOUD_ANALYSIS"
+  "review_status": "PENDING_CLOUD_ANALYSIS",
+  "report": { "report_status": "NOT_CREATED" }
 }
 ```
 
@@ -164,12 +182,20 @@ Simulator가 YOLO 결과가 `DAMAGE_SUSPECTED`인 경우, S3 이미지 업로드
 
 ## 8. Lambda 핀셋 업데이트 필드
 
-`UpdateItem` 대상 최상위 필드는 다음 4개뿐이다.
+### Analyzer (`container-damage-analyzer`)
+
+`UpdateItem` 대상 최상위 필드:
 
 - `processed_at`
 - `cloud_analysis`
 - `risk`
 - `review_status`
+
+### Report Generator (`report_generator`)
+
+`UpdateItem` 대상 최상위 필드:
+
+- `report` (중첩 객체 전체 갱신)
 
 성공/실패 예시는 아래 mock-data 참조.
 
@@ -215,6 +241,18 @@ Simulator가 YOLO 결과가 `DAMAGE_SUSPECTED`인 경우, S3 이미지 업로드
 - `AUTO_OK` → 기본 검수 큐 미표시
 - `INFERENCE_FAILED` → 실패 큐 또는 관리자 확인 큐 표시
 
+### `report.report_status`
+
+| 값 | 의미 |
+|---|---|
+| `NOT_CREATED` | 미생성 |
+| `PENDING` | 생성중 |
+| `CREATED` | 생성완료 |
+| `FAILED` | 생성실패 |
+
+대시보드에서는 `review_status = DONE`인 item의 `report.report_status`로
+보고서 진행 상태(미생성/생성중/생성완료/실패)를 표시한다.
+
 ---
 
 ## 10. 표준값
@@ -222,6 +260,7 @@ Simulator가 YOLO 결과가 `DAMAGE_SUSPECTED`인 경우, S3 이미지 업로드
 - `damage_class`(손상 유형): `hole`(구멍), `dent`(찌그러짐), `rust`(녹슴)
 - `severity`(손상 정도): `low`(경미), `medium`(중간), `high`(심각)
 - `inspection_result`: `normal`(정상), `damage`(손상)
+- `report_status`: `NOT_CREATED`(미생성), `PENDING`(생성중), `CREATED`(생성완료), `FAILED`(생성실패)
 
 ---
 
@@ -232,4 +271,5 @@ Simulator가 YOLO 결과가 `DAMAGE_SUSPECTED`인 경우, S3 이미지 업로드
 | [sample_pending_item.json](../mock-data/sample_pending_item.json) | Simulator가 PutItem 하는 최소 PENDING item |
 | [sample_completed_update.json](../mock-data/sample_completed_update.json) | Lambda 성공 시 UpdateItem 필드 |
 | [sample_failed_update.json](../mock-data/sample_failed_update.json) | Lambda 실패 시 UpdateItem 필드 |
-| [sample_report_update.json](../mock-data/sample_report_update.json) | report_generator 성공 시 `report` 필드 |
+| [sample_report_update.json](../mock-data/sample_report_update.json) | report_generator 성공 시 `report` 필드 (`CREATED`) |
+| [sample_report_pending.json](../mock-data/sample_report_pending.json) | report_generator 생성중 (`PENDING`) |
