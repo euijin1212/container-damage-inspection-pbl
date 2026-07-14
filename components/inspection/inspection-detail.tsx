@@ -300,18 +300,28 @@ export function InspectionDetail({
               <div className="space-y-3 rounded-lg bg-slate-900 p-4">
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-2.5">
-                    <FileText className="size-5 text-muted-foreground" aria-hidden />
+                    <FileText className="size-5 text-slate-400" aria-hidden />
                     <div>
                       <ReportBadge status={report_status} />
                       <p className="mt-1 text-xs text-slate-400">
-                        {(report_status === 'GENERATED' || report_status === 'COMPLETED') && report_created_at
-                          ? `생성 일시 ${formatDateTime(report_created_at)}`
+                        {report_status === 'GENERATED' || report_status === 'COMPLETED'
+                          ? report_created_at
+                            ? `생성 일시 ${formatDateTime(report_created_at)}`
+                            : `EIR PDF 준비됨 · ${inspection.event_id}.pdf`
                           : report_status === 'GENERATING'
                             ? '검출 결과 · 이미지 · OCR 취합 중'
                             : report_status === 'FAILED'
                               ? '보고서 생성에 실패했습니다.'
                               : '아직 생성된 보고서가 없습니다.'}
                       </p>
+                      {(report_status === 'GENERATED' || report_status === 'COMPLETED') &&
+                        (inspection.verdict || inspection.ai_summary) && (
+                          <p className="mt-1 line-clamp-2 text-xs text-slate-500">
+                            {inspection.verdict
+                              ? `판정: ${inspection.verdict}`
+                              : inspection.ai_summary}
+                          </p>
+                        )}
                     </div>
                   </div>
                   {report_status === 'PENDING' && (
@@ -330,7 +340,7 @@ export function InspectionDetail({
 
                 {(report_status === 'GENERATED' || report_status === 'COMPLETED') && (
                   <>
-                    <Separator />
+                    <Separator className="bg-white/10" />
                     <div className="flex flex-wrap items-center gap-2">
                       <Button
                         size="sm"
@@ -344,6 +354,7 @@ export function InspectionDetail({
                       <Button
                         size="sm"
                         variant="outline"
+                        className="border-white/20 bg-transparent text-slate-100 hover:bg-white/10 hover:text-white"
                         disabled={reportLoading}
                         onClick={() => void downloadReportPdf()}
                       >
