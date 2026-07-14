@@ -45,9 +45,9 @@ type StatusFilter = ReviewStatus | 'ALL'
 const STATUS_PRIORITY: Record<ReviewStatus, number> = {
   MANUAL_NEEDED: 0,
   AUDIT_REQUIRED: 1,
-  PROCESSING: 2,
+  PENDING_CLOUD_ANALYSIS: 2,
   REPORT_PENDING: 3,
-  FAILED: 4,
+  INFERENCE_FAILED: 4,
   REPORT_CREATED: 5,
   DONE: 6,
   AUTO_OK: 7,
@@ -55,14 +55,14 @@ const STATUS_PRIORITY: Record<ReviewStatus, number> = {
 
 // Order of the status dropdown options.
 const STATUS_OPTIONS: ReviewStatus[] = [
-  'PROCESSING',
+  'PENDING_CLOUD_ANALYSIS',
   'MANUAL_NEEDED',
   'AUDIT_REQUIRED',
   'AUTO_OK',
   'DONE',
   'REPORT_PENDING',
   'REPORT_CREATED',
-  'FAILED',
+  'INFERENCE_FAILED',
 ]
 
 type InspectionImageFields = {
@@ -74,6 +74,7 @@ type InspectionImageFields = {
 interface InspectionTableProps {
   inspections: Inspection[]
   selectedId?: string | null
+  recentlyAddedIds?: Set<string>
   statusFilter: StatusFilter
   onStatusFilterChange: (filter: StatusFilter) => void
   onSelect: (inspection: Inspection) => void
@@ -83,27 +84,17 @@ interface InspectionTableProps {
 
 function getInspectionImage(inspection: Inspection) {
   const optional = inspection as Inspection & InspectionImageFields
-  return optional.annotated_s3_url || optional.image_s3_url || inspection.originalImage || '/placeholder.svg'
+  return optional.annotated_s3_url || optional.image_s3_url || inspection.raw_image_url || '/placeholder.svg'
 }
 
 function getCapturedAt(inspection: Inspection) {
-  return (inspection as Inspection & InspectionImageFields).captured_at || inspection.capturedAt
-}
-
-function getMockWaitTime(inspection: Inspection) {
-  const captured = new Date(getCapturedAt(inspection)).getTime()
-  if (Number.isNaN(captured)) return '-'
-  const minutes = Math.max(1, Math.round((Date.now() - captured) / 60000))
-  if (minutes < 60) return `${minutes}분`
-  const hours = Math.floor(minutes / 60)
-  const remainder = minutes % 60
-  return remainder ? `${hours}시간 ${remainder}분` : `${hours}시간`
+  return (inspection as Inspection & InspectionImageFields).captured_at || inspection.captured_at
 }
 
 function rowAccentClass(inspection: Inspection) {
-  if (inspection.status === 'MANUAL_NEEDED' && inspection.riskLevel === 'HIGH') return 'border-l-destructive'
-  if (inspection.status === 'AUDIT_REQUIRED') return 'border-l-warning'
-  if (inspection.status === 'PROCESSING') return 'border-l-slate-300'
+  if (inspection.review_status === 'MANUAL_NEEDED' && inspection.risk_level === 'HIGH') return 'border-l-destructive'
+  if (inspection.review_status === 'AUDIT_REQUIRED') return 'border-l-warning'
+  if (inspection.review_status === 'PENDING_CLOUD_ANALYSIS') return 'border-l-slate-300'
   return 'border-l-transparent'
 }
 
@@ -114,6 +105,7 @@ function riskLabel(level: RiskLevel) {
 export function InspectionTable({
   inspections,
   selectedId,
+  recentlyAddedIds,
   statusFilter,
   onStatusFilterChange,
   onSelect,
@@ -128,22 +120,22 @@ export function InspectionTable({
     const q = query.trim().toLowerCase()
     return inspections
       .filter((i) => {
-        if (statusFilter !== 'ALL' && i.status !== statusFilter) return false
-        if (risk !== 'ALL' && i.riskLevel !== risk) return false
+        if (statusFilter !== 'ALL' && i.review_status !== statusFilter) return false
+        if (risk !== 'ALL' && i.risk_level !== risk) return false
         if (!q) return true
         return (
-          i.containerId.toLowerCase().includes(q) ||
-          i.id.toLowerCase().includes(q) ||
-          i.detectedDamage.toLowerCase().includes(q)
+          i.container_id.toLowerCase().includes(q) ||
+          i.event_id.toLowerCase().includes(q) ||
+          i.damage_summary.toLowerCase().includes(q)
         )
       })
       .sort((a, b) => {
         // Manual review first, then random audit, then the rest.
-        if (STATUS_PRIORITY[a.status] !== STATUS_PRIORITY[b.status]) {
-          return STATUS_PRIORITY[a.status] - STATUS_PRIORITY[b.status]
+        if (STATUS_PRIORITY[a.review_status] !== STATUS_PRIORITY[b.review_status]) {
+          return STATUS_PRIORITY[a.review_status] - STATUS_PRIORITY[b.review_status]
         }
-        if (b.riskScore !== a.riskScore) return b.riskScore - a.riskScore
-        return new Date(b.capturedAt).getTime() - new Date(a.capturedAt).getTime()
+        if (b.risk_score !== a.risk_score) return b.risk_score - a.risk_score
+        return new Date(b.captured_at).getTime() - new Date(a.captured_at).getTime()
       })
   }, [inspections, query, statusFilter, risk])
 
@@ -209,7 +201,6 @@ export function InspectionTable({
               <TableHead className="w-[112px] whitespace-nowrap text-sm font-medium text-muted-foreground">이미지</TableHead>
               <TableHead className="whitespace-nowrap text-sm font-medium text-muted-foreground">컨테이너 번호</TableHead>
               <TableHead className="whitespace-nowrap text-sm font-medium text-muted-foreground">촬영 시간</TableHead>
-              <TableHead className="whitespace-nowrap text-sm font-medium text-muted-foreground">대기 시간</TableHead>
               <TableHead className="whitespace-nowrap text-sm font-medium text-muted-foreground">감지 손상</TableHead>
               <TableHead className="whitespace-nowrap text-right text-sm font-medium text-muted-foreground">위험 점수</TableHead>
               <TableHead className="whitespace-nowrap text-sm font-medium text-muted-foreground">상태</TableHead>
@@ -218,17 +209,18 @@ export function InspectionTable({
           </TableHeader>
           <TableBody>
             {rows.map((i) => {
-              const isProcessing = i.status === 'PROCESSING'
-              const isFailed = i.status === 'FAILED'
+              const isProcessing = i.review_status === 'PENDING_CLOUD_ANALYSIS'
+              const isFailed = i.review_status === 'INFERENCE_FAILED'
               const clickable = !isProcessing && !isFailed
               return (
                 <TableRow
-                  key={i.id}
+                  key={i.event_id}
                   className={cn(
-                    'border-l-2 border-b-0 transition-colors hover:bg-blue-50/50',
+                    'border-l-2 border-b-0 transition-colors hover:bg-primary/5',
                     rowAccentClass(i),
                     clickable && 'cursor-pointer',
-                    i.id === selectedId && 'bg-blue-50',
+                    i.event_id === selectedId && 'bg-primary/10',
+                    recentlyAddedIds?.has(i.event_id) && 'inspection-row-arrive',
                     isProcessing && 'opacity-70',
                   )}
                   onClick={clickable ? () => onSelect(i) : undefined}
@@ -238,34 +230,31 @@ export function InspectionTable({
                       {/* eslint-disable-next-line @next/next/no-img-element */}
                       <img
                         src={getInspectionImage(i)}
-                        alt={`${i.containerId} 검수 썸네일`}
+                        alt={`${i.container_id} 검수 썸네일`}
                         className="size-full object-cover"
                         crossOrigin="anonymous"
                       />
                     </div>
                   </TableCell>
                   <TableCell className="whitespace-nowrap text-sm font-bold text-foreground">
-                    {i.containerId}
+                    {i.container_id}
                   </TableCell>
                   <TableCell className="whitespace-nowrap text-sm text-muted-foreground">
                     {formatCaptured(getCapturedAt(i))}
                   </TableCell>
-                  <TableCell className="whitespace-nowrap text-sm text-muted-foreground">
-                    {getMockWaitTime(i)}
-                  </TableCell>
-                  <TableCell className="max-w-[220px] truncate text-sm text-muted-foreground">{i.detectedDamage}</TableCell>
+                  <TableCell className="max-w-[220px] truncate text-sm text-muted-foreground">{i.damage_summary}</TableCell>
                   <TableCell className="text-right">
                     {isProcessing ? (
                       <span className="text-sm text-muted-foreground">-</span>
                     ) : (
                       <div>
-                        <span className={cn('text-xl font-bold tabular-nums', riskScoreColor(i.riskScore))}>{i.riskScore}</span>
-                        <span className="ml-1 text-xs text-muted-foreground">{riskLabel(i.riskLevel)}</span>
+                        <span className={cn('text-xl font-bold tabular-nums', riskScoreColor(i.risk_score))}>{i.risk_score}</span>
+                        <span className="ml-1 text-xs text-muted-foreground">{riskLabel(i.risk_level)}</span>
                       </div>
                     )}
                   </TableCell>
                   <TableCell>
-                    <StatusBadge status={i.status} />
+                    <StatusBadge status={i.review_status} />
                   </TableCell>
                   <TableCell className="text-right">
                     {isFailed ? (
@@ -280,16 +269,16 @@ export function InspectionTable({
                         </Button>
                         <DropdownMenu>
                           <DropdownMenuTrigger
-                            aria-label={`${i.containerId} 오류 작업`}
+                            aria-label={`${i.container_id} 오류 작업`}
                             className={cn(buttonVariants({ variant: 'ghost', size: 'icon-sm' }))}
                           >
                             <MoreHorizontal className="size-4" />
                           </DropdownMenuTrigger>
                           <DropdownMenuContent align="end">
-                            <DropdownMenuItem onClick={() => onRetry(i.id)}>
+                            <DropdownMenuItem onClick={() => onRetry(i.event_id)}>
                               <RotateCw className="size-4" /> 분석 재시도
                             </DropdownMenuItem>
-                            <DropdownMenuItem onClick={() => onManualSwitch(i.id)}>
+                            <DropdownMenuItem onClick={() => onManualSwitch(i.event_id)}>
                               <UserCog className="size-4" /> 수동 검수 전환
                             </DropdownMenuItem>
                           </DropdownMenuContent>
@@ -300,7 +289,7 @@ export function InspectionTable({
                         variant="ghost"
                         size="icon-sm"
                         disabled={isProcessing}
-                        aria-label={`${i.containerId} 상세 보기`}
+                        aria-label={`${i.container_id} 상세 보기`}
                         onClick={(e) => {
                           e.stopPropagation()
                           onSelect(i)
@@ -315,7 +304,7 @@ export function InspectionTable({
             })}
             {rows.length === 0 && (
               <TableRow className="hover:bg-transparent">
-                <TableCell colSpan={8} className="py-14 text-center">
+                <TableCell colSpan={7} className="py-14 text-center">
                   <p className="text-sm font-medium text-foreground">현재 대기 중인 검수 항목이 없습니다.</p>
                   <p className="mt-1 text-xs text-muted-foreground">
                     새로운 컨테이너 분석 결과가 들어오면 자동으로 표시됩니다.
@@ -335,11 +324,11 @@ export function InspectionTable({
               <AlertTriangle className="size-5 text-destructive" aria-hidden /> 처리 실패 상세
             </DialogTitle>
             <DialogDescription className="text-xs">
-              {errorItem?.id} · {errorItem?.containerId}
+              {errorItem?.event_id} · {errorItem?.container_id}
             </DialogDescription>
           </DialogHeader>
           <div className="rounded-md border border-destructive/30 bg-destructive/10 p-3 text-sm text-destructive">
-            {errorItem?.errorMessage}
+            {errorItem?.error_message}
           </div>
           <DialogFooter className="gap-2 sm:justify-end">
             {errorItem && (
@@ -347,7 +336,7 @@ export function InspectionTable({
                 <Button
                   variant="secondary"
                   onClick={() => {
-                    onManualSwitch(errorItem.id)
+                    onManualSwitch(errorItem.event_id)
                     setErrorItem(null)
                   }}
                 >
@@ -355,7 +344,7 @@ export function InspectionTable({
                 </Button>
                 <Button
                   onClick={() => {
-                    onRetry(errorItem.id)
+                    onRetry(errorItem.event_id)
                     setErrorItem(null)
                   }}
                 >

@@ -11,8 +11,8 @@ export const metadata: Metadata = {
 }
 
 export const viewport: Viewport = {
-  colorScheme: 'light',
-  themeColor: '#f7f8fa',
+  colorScheme: 'dark',
+  themeColor: '#1f242d',
 }
 
 export default function RootLayout({
@@ -21,7 +21,7 @@ export default function RootLayout({
   children: React.ReactNode
 }>) {
   return (
-    <html lang="ko" className="bg-background">
+    <html lang="ko" className="dark bg-background">
       <body className="font-sans antialiased">
         <TooltipProvider delay={200}>{children}</TooltipProvider>
         {process.env.NODE_ENV === 'production' && <Analytics />}

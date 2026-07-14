@@ -98,6 +98,48 @@
   --sidebar-ring: oklch(0.55 0.19 255);
 }
 
+.dark {
+  color-scheme: dark;
+  --background: oklch(0.18 0.012 255);
+  --foreground: oklch(0.96 0.004 250);
+  --card: oklch(0.23 0.014 255);
+  --card-foreground: oklch(0.96 0.004 250);
+  --popover: oklch(0.23 0.014 255);
+  --popover-foreground: oklch(0.96 0.004 250);
+  --primary: oklch(0.68 0.15 245);
+  --primary-foreground: oklch(0.14 0.02 255);
+  --secondary: oklch(0.29 0.014 255);
+  --secondary-foreground: oklch(0.94 0.004 250);
+  --muted: oklch(0.29 0.014 255);
+  --muted-foreground: oklch(0.72 0.012 250);
+  --accent: oklch(0.68 0.15 245);
+  --accent-foreground: oklch(0.14 0.02 255);
+  --destructive: oklch(0.64 0.19 25);
+  --destructive-foreground: oklch(0.98 0.006 25);
+  --success: oklch(0.68 0.13 150);
+  --success-foreground: oklch(0.14 0.02 150);
+  --warning: oklch(0.74 0.15 70);
+  --warning-foreground: oklch(0.18 0.03 70);
+  --info: oklch(0.68 0.15 245);
+  --info-foreground: oklch(0.14 0.02 255);
+  --border: oklch(1 0 0 / 10%);
+  --input: oklch(1 0 0 / 14%);
+  --ring: oklch(0.68 0.15 245);
+  --chart-1: oklch(0.68 0.15 245);
+  --chart-2: oklch(0.74 0.15 70);
+  --chart-3: oklch(0.68 0.13 150);
+  --chart-4: oklch(0.64 0.19 25);
+  --chart-5: oklch(0.72 0.012 250);
+  --sidebar: oklch(0.2 0.014 255);
+  --sidebar-foreground: oklch(0.96 0.004 250);
+  --sidebar-primary: oklch(0.68 0.15 245);
+  --sidebar-primary-foreground: oklch(0.14 0.02 255);
+  --sidebar-accent: oklch(0.29 0.014 255);
+  --sidebar-accent-foreground: oklch(0.94 0.004 250);
+  --sidebar-border: oklch(1 0 0 / 10%);
+  --sidebar-ring: oklch(0.68 0.15 245);
+}
+
 @layer base {
   * {
     @apply border-border outline-ring/50;
@@ -106,4 +148,22 @@
     @apply bg-background text-foreground;
     font-family: var(--font-sans);
   }
+}
+
+@keyframes inspection-row-arrive {
+  0% {
+    background-color: oklch(0.68 0.15 245 / 18%);
+    transform: translateY(-6px);
+  }
+  65% {
+    background-color: oklch(0.68 0.15 245 / 10%);
+  }
+  100% {
+    background-color: transparent;
+    transform: translateY(0);
+  }
+}
+
+.inspection-row-arrive {
+  animation: inspection-row-arrive 900ms ease-out;
 }

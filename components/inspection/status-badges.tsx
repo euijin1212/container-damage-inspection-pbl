@@ -3,11 +3,11 @@ import type { ReportStatus, ReviewStatus, RiskLevel } from '@/lib/inspection-typ
 import { REPORT_META, RISK_META, STATUS_META } from '@/lib/mock-inspections'
 
 const toneClasses: Record<string, string> = {
-  destructive: 'bg-red-50 text-red-700',
-  warning: 'bg-orange-50 text-orange-700',
-  info: 'bg-blue-50 text-blue-700',
-  success: 'bg-emerald-50 text-emerald-700',
-  muted: 'bg-slate-100 text-slate-600',
+  destructive: 'bg-destructive/15 text-destructive',
+  warning: 'bg-warning/15 text-warning',
+  info: 'bg-info/15 text-info',
+  success: 'bg-success/15 text-success',
+  muted: 'bg-muted text-muted-foreground',
 }
 
 function Pill({ tone, children }: { tone: string; children: React.ReactNode }) {

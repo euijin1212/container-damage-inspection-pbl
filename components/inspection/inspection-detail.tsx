@@ -6,7 +6,6 @@ import {
   Download,
   FileSearch,
   FileText,
-  MapPin,
   PauseCircle,
   RefreshCw,
   RotateCw,
@@ -91,7 +90,7 @@ export function InspectionDetail({
     setComment('')
     setPreviewOpen(false)
     setDownloadNote(false)
-  }, [inspection?.id])
+  }, [inspection?.event_id])
 
   useEffect(() => {
     if (!downloadNote) return
@@ -101,7 +100,8 @@ export function InspectionDetail({
 
   if (!inspection) return null
 
-  const { reportStatus } = inspection
+  const report_status = inspection.report?.report_status ?? inspection.report_status ?? 'PENDING'
+  const report_created_at = inspection.report?.report_created_at ?? inspection.report_created_at
 
   function closeConfirm() {
     setConfirm(null)
@@ -110,9 +110,9 @@ export function InspectionDetail({
 
   function runConfirm() {
     if (!inspection) return
-    if (confirm === 'approve') onApprove(inspection.id)
-    if (confirm === 'reject') onReject(inspection.id, comment)
-    if (confirm === 'reinspect') onReinspect(inspection.id, comment)
+    if (confirm === 'approve') onApprove(inspection.event_id)
+    if (confirm === 'reject') onReject(inspection.event_id, comment)
+    if (confirm === 'reinspect') onReinspect(inspection.event_id, comment)
     closeConfirm()
   }
 
@@ -126,19 +126,16 @@ export function InspectionDetail({
               대기열 {queueIndex} / {queueTotal}
             </span>
           </div>
-          <SheetTitle className="text-3xl font-bold tracking-tight text-white">{inspection.containerId}</SheetTitle>
+          <SheetTitle className="text-3xl font-bold tracking-tight text-white">{inspection.container_id}</SheetTitle>
           <div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-sm text-slate-400">
-            <span className="inline-flex items-center gap-1">
-              <MapPin className="size-3.5 text-blue-300" aria-hidden /> {inspection.gate} · {inspection.lane}
-            </span>
-            <span>{formatCaptured(inspection.capturedAt)}</span>
-            <StatusBadge status={inspection.status} />
+            <span>{formatCaptured(inspection.captured_at)}</span>
+            <StatusBadge status={inspection.review_status} />
           </div>
           <div className="flex items-center gap-3">
-            <span className={cn('text-4xl font-bold tabular-nums leading-none', riskScoreColor(inspection.riskScore))}>
-              {inspection.riskScore}
+            <span className={cn('text-4xl font-bold tabular-nums leading-none', riskScoreColor(inspection.risk_score))}>
+              {inspection.risk_score}
             </span>
-            <RiskBadge level={inspection.riskLevel} />
+            <RiskBadge level={inspection.risk_level} />
           </div>
         </SheetHeader>
 
@@ -159,16 +156,16 @@ export function InspectionDetail({
               </div>
               <TabsContent value="annotated" className="mt-3">
                 <AnnotatedImage
-                  src={inspection.originalImage}
-                  alt={`${inspection.containerId} AI 분석 이미지`}
+                  src={inspection.annotated_s3_url || inspection.raw_image_url}
+                  alt={`${inspection.container_id} AI 분석 이미지`}
                   detections={inspection.detections}
                   activeId={activeDetection}
                 />
               </TabsContent>
               <TabsContent value="original" className="mt-3">
                 <AnnotatedImage
-                  src={inspection.originalImage}
-                  alt={`${inspection.containerId} 원본 이미지`}
+                  src={inspection.raw_image_url}
+                  alt={`${inspection.container_id} 원본 이미지`}
                   annotated={false}
                 />
               </TabsContent>
@@ -180,9 +177,9 @@ export function InspectionDetail({
                 <h3 className="text-sm font-semibold text-slate-100">AI 판독 패널</h3>
               </div>
               <div className="grid gap-px bg-white/10 md:grid-cols-2">
-                <InfoCell label="감지 손상" value={inspection.detectedDamage} tone="dark" />
+                <InfoCell label="감지 손상" value={inspection.damage_summary} tone="dark" />
                 <InfoCell label="신뢰도" value={inspection.detections.length ? `${getPrimaryConfidence(inspection)}%` : '감지 없음'} tone="dark" />
-                <InfoCell label="심각도" value={SEVERITY_LABEL[inspection.riskLevel]} tone="dark" />
+                <InfoCell label="심각도" value={SEVERITY_LABEL[inspection.risk_level]} tone="dark" />
                 <div className="bg-slate-900 p-4">
                   <dt className="text-xs text-slate-400">OCR 결과</dt>
                   <dd className="mt-1 flex flex-wrap items-center gap-2 text-sm text-slate-100">
@@ -190,8 +187,8 @@ export function InspectionDetail({
                       <ScanText className="size-4 text-accent" aria-hidden />
                       {inspection.ocr.text || '인식 실패'}
                     </span>
-                    <span className={cn('text-xs', inspection.ocr.matchesManifest ? 'text-success' : 'text-warning')}>
-                      {inspection.ocr.matchesManifest ? 'Manifest 일치' : 'Manifest 확인 필요'}
+                    <span className={cn('text-xs', inspection.ocr.matches_manifest ? 'text-success' : 'text-warning')}>
+                      {inspection.ocr.matches_manifest ? 'Manifest 일치' : 'Manifest 확인 필요'}
                     </span>
                   </dd>
                 </div>
@@ -199,7 +196,7 @@ export function InspectionDetail({
               <div className="border-t border-white/10 p-5">
                 <p className="text-xs text-slate-400">AI 판단 근거</p>
                 <p className="mt-2 text-sm leading-6 text-slate-300 text-pretty">
-                  {inspection.aiSummary || 'AI 판독 요약이 아직 생성되지 않았습니다.'}
+                  {inspection.ai_summary || 'AI 판독 요약이 아직 생성되지 않았습니다.'}
                 </p>
               </div>
               <div className="border-t border-white/10 p-5">
@@ -207,7 +204,7 @@ export function InspectionDetail({
                   <h4 className="text-sm font-medium text-slate-300">
                     감지 결과 {inspection.detections.length}건
                   </h4>
-                  <span className="text-xs text-slate-500">{inspection.id}</span>
+                  <span className="text-xs text-slate-500">{inspection.event_id}</span>
                 </div>
                 <div className="space-y-2">
                 {inspection.detections.length === 0 && (
@@ -248,10 +245,8 @@ export function InspectionDetail({
             <div>
               <h3 className="mb-2 text-sm font-semibold text-slate-300">촬영 정보</h3>
               <dl className="grid grid-cols-2 gap-px overflow-hidden rounded-lg bg-white/10">
-                <InfoCell label="게이트 및 레인" value={`${inspection.gate} · ${inspection.lane}`} tone="dark" />
-                <InfoCell label="담당 검수자" value={inspection.inspector} tone="dark" />
-                <InfoCell label="촬영 시간" value={formatDateTime(inspection.capturedAt)} tone="dark" />
-                <InfoCell label="검수 ID" value={inspection.id} tone="dark" />
+                <InfoCell label="촬영 시간" value={formatDateTime(inspection.captured_at)} tone="dark" />
+                <InfoCell label="담당 검수자" value={inspection.assigned_inspector || '미배정'} tone="dark" />
               </dl>
             </div>
 
@@ -263,33 +258,33 @@ export function InspectionDetail({
                   <div className="flex items-center gap-2.5">
                     <FileText className="size-5 text-muted-foreground" aria-hidden />
                     <div>
-                      <ReportBadge status={reportStatus} />
+                      <ReportBadge status={report_status} />
                       <p className="mt-1 text-xs text-slate-400">
-                        {reportStatus === 'CREATED' && inspection.reportCreatedAt
-                          ? `생성 일시 ${formatDateTime(inspection.reportCreatedAt)}`
-                          : reportStatus === 'GENERATING'
+                        {(report_status === 'GENERATED' || report_status === 'COMPLETED') && report_created_at
+                          ? `생성 일시 ${formatDateTime(report_created_at)}`
+                          : report_status === 'GENERATING'
                             ? '검출 결과 · 이미지 · OCR 취합 중'
-                            : reportStatus === 'FAILED'
+                            : report_status === 'FAILED'
                               ? '보고서 생성에 실패했습니다.'
                               : '아직 생성된 보고서가 없습니다.'}
                       </p>
                     </div>
                   </div>
-                  {reportStatus === 'PENDING' && (
-                    <Button size="sm" onClick={() => onGenerateReport(inspection.id)}>
+                  {report_status === 'PENDING' && (
+                    <Button size="sm" onClick={() => onGenerateReport(inspection.event_id)}>
                       <FileText className="size-4" /> 보고서 생성
                     </Button>
                   )}
-                  {reportStatus === 'FAILED' && (
-                    <Button size="sm" variant="secondary" onClick={() => onGenerateReport(inspection.id)}>
+                  {report_status === 'FAILED' && (
+                    <Button size="sm" variant="secondary" onClick={() => onGenerateReport(inspection.event_id)}>
                       <RotateCw className="size-4" /> 재생성
                     </Button>
                   )}
                 </div>
 
-                {reportStatus === 'GENERATING' && <Progress value={62} />}
+                {report_status === 'GENERATING' && <Progress value={62} />}
 
-                {reportStatus === 'CREATED' && (
+                {(report_status === 'GENERATED' || report_status === 'COMPLETED') && (
                   <>
                     <Separator />
                     <div className="flex flex-wrap items-center gap-2">
@@ -306,7 +301,7 @@ export function InspectionDetail({
                   </>
                 )}
 
-                {(reportStatus === 'PENDING' || reportStatus === 'GENERATING') && (
+                {(report_status === 'PENDING' || report_status === 'GENERATING') && (
                   <div className="flex flex-wrap items-center gap-2 opacity-60">
                     <Button size="sm" variant="secondary" disabled>
                       <FileSearch className="size-4" /> 보고서 미리보기
@@ -352,7 +347,7 @@ export function InspectionDetail({
               {confirm === 'reinspect' && '재검수 요청'}
             </DialogTitle>
             <DialogDescription className="text-xs">
-              {inspection.id} · {inspection.containerId}
+              {inspection.event_id} · {inspection.container_id}
             </DialogDescription>
           </DialogHeader>
           <p className="text-sm text-muted-foreground">
@@ -395,15 +390,15 @@ export function InspectionDetail({
               <FileText className="size-5 text-info" aria-hidden /> 컨테이너 손상 보고서
             </DialogTitle>
             <DialogDescription className="text-xs">
-              {inspection.id} · {inspection.reportCreatedAt ? formatDateTime(inspection.reportCreatedAt) : ''}
+              {inspection.event_id} · {report_created_at ? formatDateTime(report_created_at) : ''}
             </DialogDescription>
           </DialogHeader>
           <div className="mt-2 space-y-4">
             <dl className="grid grid-cols-2 gap-px overflow-hidden rounded-md border border-border bg-border">
-              <InfoCell label="컨테이너 번호" value={inspection.containerId} />
-              <InfoCell label="검수 일시" value={formatDateTime(inspection.capturedAt)} />
-              <InfoCell label="위험 점수" value={`${inspection.riskScore} / 100`} />
-              <InfoCell label="위험도" value={SEVERITY_LABEL[inspection.riskLevel]} />
+              <InfoCell label="컨테이너 번호" value={inspection.container_id} />
+              <InfoCell label="검수 일시" value={formatDateTime(inspection.captured_at)} />
+              <InfoCell label="위험 점수" value={`${inspection.risk_score} / 100`} />
+              <InfoCell label="위험도" value={SEVERITY_LABEL[inspection.risk_level]} />
             </dl>
             <ReportBlock title="감지된 손상">
               <ul className="list-disc space-y-1 pl-5 text-sm text-muted-foreground">
@@ -416,10 +411,10 @@ export function InspectionDetail({
               </ul>
             </ReportBlock>
             <ReportBlock title="AI 분석 요약">
-              <p className="text-sm text-muted-foreground text-pretty">{inspection.aiSummary || '요약 없음'}</p>
+              <p className="text-sm text-muted-foreground text-pretty">{inspection.ai_summary || '요약 없음'}</p>
             </ReportBlock>
             <ReportBlock title="검수자 의견">
-              <p className="text-sm text-muted-foreground text-pretty">{inspection.reviewerComment || '작성된 의견 없음'}</p>
+              <p className="text-sm text-muted-foreground text-pretty">{inspection.reviewer_comment || '작성된 의견 없음'}</p>
             </ReportBlock>
             <ReportBlock title="최종 판정">
               <p className="text-sm font-medium text-foreground">{inspection.verdict || '판정 없음'}</p>
