@@ -43,3 +43,7 @@ env/
 .idea/
 .DS_Store
 Thumbs.db
+
+# RAG source scans (image-only PDFs; use .md guides instead)
+knowledge-base/**/*.pdf
+

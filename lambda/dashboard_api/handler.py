@@ -365,9 +365,7 @@ def _serialize_item(item: Dict, *, detail: bool = False) -> Dict:
     if not detections_raw:
         detections_raw = edge_detections
 
-    fallback_conf = cloud.get("confidence")
-    if fallback_conf is None:
-        fallback_conf = edge.get("edge_confidence")
+    fallback_conf = edge.get("edge_confidence")
 
     img_w = image.get("width") or image.get("image_width")
     img_h = image.get("height") or image.get("image_height")

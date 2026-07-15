@@ -114,7 +114,6 @@ def build_reinspect_success_fields(
                     det["bbox"] = edge_d["bbox"]
         detections.append(det)
 
-    confidences = [d.confidence for d in damages]
     review_status = "MANUAL_NEEDED"
     note = (reviewer_note or "").strip()
     image_meta: Dict[str, Any] = {
@@ -131,7 +130,6 @@ def build_reinspect_success_fields(
         "analysis_status": "COMPLETED",
         "model_name": model_id,
         "inspection_result": "damage" if damages else "normal",
-            "confidence": round(max(confidences), 3) if confidences else 0.0,
         "detection_count": len(detections),
         "detections": detections,
         "reinspect": True,
@@ -192,7 +190,6 @@ def build_standard_success_fields(
                     det["bbox"] = edge_d["bbox"]
         detections.append(det)
 
-    confidences = [d.confidence for d in damages]
     image_meta: Dict[str, Any] = {
         "bucket": bucket,
         "raw_image_key": key,
@@ -207,7 +204,6 @@ def build_standard_success_fields(
             "analysis_status": "COMPLETED",
             "model_name": model_id,
             "inspection_result": "damage" if damages else "normal",
-            "confidence": round(max(confidences), 3) if confidences else 0.0,
             "detection_count": len(detections),
             "detections": detections,
         },

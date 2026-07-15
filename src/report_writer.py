@@ -65,26 +65,27 @@ _RECORD_FIELDS = (
     "model_version",
 )
 
-_PROMPT_TEMPLATE = """당신은 항만 컨테이너 검수 보고서(EIR)를 작성하는 전문가입니다.
-아래 검수 결과 JSON 을 근거로, 컨테이너 반입/반출 판단에 쓰일 보고서 초안을 작성하세요.
+_PROMPT_TEMPLATE = """당신은 항만 EIR(Equipment Interchange Receipt) 전표 작성 담당자입니다.
+아래 검수 결과 JSON 과 참고 양식 지침을 근거로, EIR 전표의 Remarks/판정란에 들어갈 문구만 작성하세요.
 {reference_block}
 규칙:
-- 참고 자료가 제공된 경우, 그 양식·항목·문체·판정 기준을 최대한 따릅니다.
+- 참고 자료가 있으면 그 양식 항목·문체·판정 기준을 따릅니다.
 - 반드시 아래 JSON 스키마로만 답합니다. 코드펜스/설명 문장은 넣지 마세요.
-- 모든 서술 필드는 한국어로 간결하게 작성합니다(각 2~4문장).
-- 근거 없는 손상을 지어내지 마세요. 제공된 detections 만 근거로 삼습니다.
-- reuse_decision 은 손상 유형/정도/risk_level 을 종합해 판정합니다.
-  · USABLE: 무손상 또는 경미(low) 위주, 즉시 재사용 가능
-  · REPAIR_NEEDED: 수리 후 재사용 가능한 중간 수준 손상
-  · REJECT: 관통/구조적(high) 손상 등으로 사용 불가
+- 서술 필드는 한국어, EIR 전표 톤(짧고 사실만). 각 1~3문장.
+- 근거 없는 손상을 지어내지 마세요. 제공된 detections 만 사용합니다.
+- confidence, 모델명, 내부 점수를 본문에 쓰지 마세요.
+- reuse_decision:
+  · USABLE: 무손상 또는 경미(low) 위주
+  · REPAIR_NEEDED: 수리 후 재사용
+  · REJECT: 관통/구조적(high) 등으로 사용 불가
 
 출력 JSON 스키마:
 {{
-  "summary": "검수 결과 요약",
-  "damage_assessment": "손상 상태 종합 평가",
-  "recommended_action": "권고 조치 사항",
+  "summary": "EIR Remarks용 상태 요약 (전표 메모 스타일)",
+  "damage_assessment": "손상 위치·유형·정도에 대한 짧은 평가",
+  "recommended_action": "인수/수리/반출 등 권고 조치 한두 문장",
   "reuse_decision": "USABLE|REPAIR_NEEDED|REJECT",
-  "reuse_reason": "재사용 판정 근거"
+  "reuse_reason": "Disposition 판정 근거 한두 문장"
 }}
 
 검수 결과 JSON:

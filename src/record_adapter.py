@@ -24,10 +24,21 @@ def _first_location(detections: List[Dict]) -> Optional[str]:
     return None
 
 
+def _strip_detection_confidence(detections: List[Dict]) -> List[Dict]:
+    """보고서용 detection 에서 confidence 를 제거한다."""
+    cleaned: List[Dict] = []
+    for d in detections or []:
+        if not isinstance(d, dict):
+            continue
+        cleaned.append({k: v for k, v in d.items() if k != "confidence"})
+    return cleaned
+
+
 def normalize_inspection_record(record: Dict) -> Dict:
     """DynamoDB 검수 item(MVP 중첩 또는 legacy flat)을 보고서용 flat dict 로 변환."""
     # 이미 flat 필드가 있으면 MVP 중첩 값으로 보완만 한다.
     if record.get("detections") and not (record.get("cloud_analysis") or {}).get("detections"):
+        detections = _strip_detection_confidence(record.get("detections") or [])
         return {
             "event_id": record.get("event_id"),
             "container_id": record.get("container_id")
@@ -35,13 +46,13 @@ def normalize_inspection_record(record: Dict) -> Dict:
             "captured_at": record.get("captured_at"),
             "processed_at": record.get("processed_at"),
             "inspection_result": record.get("inspection_result"),
-            "detection_count": record.get("detection_count", len(record.get("detections") or [])),
-            "detections": record.get("detections") or [],
+            "detection_count": record.get("detection_count", len(detections)),
+            "detections": detections,
             "risk_score": record.get("risk_score") or (record.get("risk") or {}).get("risk_score"),
             "risk_level": record.get("risk_level") or (record.get("risk") or {}).get("risk_level"),
             "model_version": record.get("model_version")
             or (record.get("cloud_analysis") or {}).get("model_name"),
-            "location": record.get("location") or _first_location(record.get("detections") or []),
+            "location": record.get("location") or _first_location(detections),
         }
 
     cloud = record.get("cloud_analysis") or {}
@@ -54,7 +65,6 @@ def normalize_inspection_record(record: Dict) -> Dict:
             {
                 "class": d.get("damage_class"),
                 "severity": d.get("severity"),
-                "confidence": d.get("confidence") or cloud.get("confidence"),
                 "location": d.get("location"),
                 "description": d.get("description"),
             }

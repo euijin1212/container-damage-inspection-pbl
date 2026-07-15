@@ -1,35 +1,41 @@
-"""pdf_report.py — 검수 보고서(EIR) PDF 렌더러.
+"""pdf_report.py — 표준 EIR(Equipment Interchange Receipt) 양식 PDF 렌더러.
 
 역할
 ----
-`report_writer` 가 만든 보고서 섹션 dict 와 원본 검수 레코드를 받아
-S3 에 올릴 PDF 바이트를 만든다. 순수 파이썬 라이브러리 `fpdf2` 를 사용한다.
+`report_writer` 초안 + 검수 레코드를 **EIR 전표 레이아웃**으로 렌더링한다.
+RAG 는 문장(remarks 등)만 보조하고, 양식 구조는 이 모듈이 고정한다.
 
-한글 폰트
---------
-fpdf2 의 기본 코어 폰트(Helvetica)는 한글을 렌더링하지 못한다. 한글을 제대로
-출력하려면 유니코드 TTF 폰트가 필요하다. 다음 순서로 폰트를 찾는다:
-  1) 환경변수 `REPORT_FONT_PATH` 가 가리키는 TTF
-  2) 이 패키지 옆 `fonts/` 폴더의 *.ttf (예: NanumGothic.ttf)
-폰트를 못 찾으면 Helvetica 로 대체하고, 한글은 ASCII 로 치환(누락)해 최소한
-유효한 PDF 가 나오도록 한다(라벨은 영문 병기).
-
-의존성: fpdf2 (requirements.txt). Lambda 배포 시 zip 에 함께 번들해야 한다.
+의존성: fpdf2. Lambda zip 에 한글 TTF(`fonts/`)와 함께 번들.
 """
 
 from __future__ import annotations
 
 import os
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 from .record_adapter import normalize_inspection_record
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _FONT_DIRS = (os.path.join(_HERE, "fonts"),)
 
+_TYPE_KO = {
+    "hole": "구멍(Hole)",
+    "dent": "찌그러짐(Dent)",
+    "rust": "녹/부식(Rust)",
+}
+_SEV_KO = {
+    "low": "경미(Low)",
+    "medium": "보통(Medium)",
+    "high": "심각(High)",
+}
+_DECISION_KO = {
+    "USABLE": "인수 가능 (Accepted / Usable)",
+    "REPAIR_NEEDED": "수리 후 인수 (Repair Required)",
+    "REJECT": "인수 불가 (Rejected)",
+}
+
 
 def _find_font() -> Optional[str]:
-    """사용할 한글 TTF 경로를 찾는다(없으면 None)."""
     env_path = os.getenv("REPORT_FONT_PATH")
     if env_path and os.path.exists(env_path):
         return env_path
@@ -41,18 +47,17 @@ def _find_font() -> Optional[str]:
     return None
 
 
-class _Report:
-    """fpdf2 wrapper. 폰트 유무에 따라 한글/영문 폴백을 처리한다."""
+class _EirForm:
+    """테두리 있는 EIR 전표용 fpdf2 래퍼."""
 
     def __init__(self) -> None:
-        from fpdf import FPDF  # 지연 import: PDF 생성 시점에만 의존성 필요
+        from fpdf import FPDF
         from fpdf.enums import XPos, YPos
 
-        # 매 multi_cell 마다 커서를 좌측 여백으로 되돌려 폭 계산이 깨지지 않게 한다.
         self._next = {"new_x": XPos.LMARGIN, "new_y": YPos.NEXT}
         self.pdf = FPDF(format="A4")
-        self.pdf.set_margins(15, 15, 15)
-        self.pdf.set_auto_page_break(auto=True, margin=15)
+        self.pdf.set_margins(12, 12, 12)
+        self.pdf.set_auto_page_break(auto=True, margin=12)
         self.pdf.add_page()
 
         font_path = _find_font()
@@ -61,86 +66,245 @@ class _Report:
             self.family = "Report"
             self.unicode = True
         else:
-            print("[pdf_report] 한글 TTF 미발견 → Helvetica 대체(한글 누락 가능). "
-                  "REPORT_FONT_PATH 로 폰트를 지정하세요.")
+            print(
+                "[pdf_report] 한글 TTF 미발견 → Helvetica 대체. "
+                "REPORT_FONT_PATH 로 폰트를 지정하세요."
+            )
             self.family = "Helvetica"
             self.unicode = False
 
-    def _t(self, text: str) -> str:
-        """폰트가 한글을 지원하지 않으면 latin-1 로 안전 변환."""
-        if self.unicode:
-            return text
-        return text.encode("latin-1", "replace").decode("latin-1")
+        self._page_w = self.pdf.w - self.pdf.l_margin - self.pdf.r_margin
 
-    def title(self, text: str) -> None:
-        self.pdf.set_font(self.family, size=18)
-        self.pdf.multi_cell(0, 10, self._t(text), **self._next)
+    def _t(self, text: str) -> str:
+        if self.unicode:
+            return str(text or "")
+        return str(text or "").encode("latin-1", "replace").decode("latin-1")
+
+    def banner(self) -> None:
+        self.pdf.set_font(self.family, size=16)
+        self.pdf.cell(
+            self._page_w,
+            12,
+            self._t("EQUIPMENT INTERCHANGE RECEIPT (EIR)"),
+            border=1,
+            align="C",
+            new_x="LMARGIN",
+            new_y="NEXT",
+        )
+        self.pdf.set_font(self.family, size=9)
+        self.pdf.cell(
+            self._page_w,
+            7,
+            self._t("컨테이너 장비 인수·인계 검수 전표"),
+            border=1,
+            align="C",
+            new_x="LMARGIN",
+            new_y="NEXT",
+        )
         self.pdf.ln(2)
 
-    def heading(self, text: str) -> None:
-        self.pdf.ln(3)
-        self.pdf.set_font(self.family, size=13)
-        self.pdf.multi_cell(0, 8, self._t(text), **self._next)
+    def section(self, title: str) -> None:
+        self.pdf.set_font(self.family, size=10)
+        self.pdf.set_fill_color(230, 230, 230)
+        self.pdf.cell(
+            self._page_w,
+            7,
+            self._t(title),
+            border=1,
+            fill=True,
+            new_x="LMARGIN",
+            new_y="NEXT",
+        )
 
-    def kv(self, label: str, value: str) -> None:
-        self.pdf.set_font(self.family, size=11)
-        self.pdf.multi_cell(0, 7, self._t(f"- {label}: {value}"), **self._next)
+    def row2(self, left: Tuple[str, str], right: Tuple[str, str]) -> None:
+        """2열 라벨-값 행."""
+        half = self._page_w / 2
+        lw = half * 0.38
+        vw = half * 0.62
+        self.pdf.set_font(self.family, size=9)
+        y0 = self.pdf.get_y()
+        x0 = self.pdf.l_margin
 
-    def paragraph(self, text: str) -> None:
-        self.pdf.set_font(self.family, size=11)
-        self.pdf.multi_cell(0, 7, self._t(text or "-"), **self._next)
+        self.pdf.set_xy(x0, y0)
+        self.pdf.cell(lw, 8, self._t(left[0]), border=1)
+        self.pdf.cell(vw, 8, self._t(left[1]), border=1)
+
+        self.pdf.set_xy(x0 + half, y0)
+        self.pdf.cell(lw, 8, self._t(right[0]), border=1)
+        self.pdf.cell(vw, 8, self._t(right[1]), border=1)
+        self.pdf.set_xy(x0, y0 + 8)
+
+    def row1(self, label: str, value: str, label_w: float = 40) -> None:
+        self.pdf.set_font(self.family, size=9)
+        vw = self._page_w - label_w
+        self.pdf.cell(label_w, 8, self._t(label), border=1)
+        self.pdf.cell(vw, 8, self._t(value), border=1, new_x="LMARGIN", new_y="NEXT")
+
+    def multiline(self, label: str, text: str, min_h: float = 20) -> None:
+        self.pdf.set_font(self.family, size=9)
+        label_w = 40
+        val_w = self._page_w - label_w
+        x0 = self.pdf.l_margin
+        y0 = self.pdf.get_y()
+
+        # 값 높이 측정
+        self.pdf.set_xy(x0 + label_w, y0)
+        self.pdf.multi_cell(val_w, 5, self._t(text or "-"), border=0)
+        y1 = self.pdf.get_y()
+        h = max(min_h, y1 - y0)
+
+        # 라벨 + 테두리 다시 그림
+        self.pdf.set_xy(x0, y0)
+        self.pdf.cell(label_w, h, self._t(label), border=1)
+        self.pdf.set_xy(x0 + label_w, y0)
+        self.pdf.multi_cell(val_w, 5, self._t(text or "-"), border=1)
+        # multi_cell 후 y 보정
+        if self.pdf.get_y() < y0 + h:
+            self.pdf.set_y(y0 + h)
+
+    def table_header(self, cols: List[Tuple[str, float]]) -> None:
+        self.pdf.set_font(self.family, size=9)
+        self.pdf.set_fill_color(240, 240, 240)
+        for title, w in cols:
+            self.pdf.cell(w, 7, self._t(title), border=1, fill=True, align="C")
+        self.pdf.ln()
+
+    def table_row(self, cols: List[Tuple[str, float]]) -> None:
+        self.pdf.set_font(self.family, size=8)
+        for text, w in cols:
+            self.pdf.cell(w, 7, self._t(text), border=1)
+        self.pdf.ln()
+
+    def check_line(self, label: str, checked: bool) -> None:
+        mark = "[X]" if checked else "[ ]"
+        self.pdf.set_font(self.family, size=9)
+        self.pdf.cell(
+            self._page_w,
+            7,
+            self._t(f"  {mark}  {label}"),
+            border=1,
+            new_x="LMARGIN",
+            new_y="NEXT",
+        )
 
     def output(self) -> bytes:
         return bytes(self.pdf.output())
 
 
-def _fmt_detections(detections: List[Dict]) -> List[str]:
-    if not detections:
-        return ["탐지된 손상 없음 (No damage detected)"]
-    lines = []
-    for i, d in enumerate(detections, 1):
-        lines.append(
-            f"{i}. class={d.get('class', '?')} / severity={d.get('severity', '?')} "
-            f"/ confidence={d.get('confidence', '?')} / location={d.get('location', '-')}"
-        )
-    return lines
+def _fmt_result_types(detections: List[Dict]) -> str:
+    seen = []
+    for d in detections or []:
+        label = str(d.get("class") or d.get("damage_class") or "").strip().lower()
+        if label and label not in seen:
+            seen.append(label)
+    if not seen:
+        return "NONE"
+    return ", ".join(_TYPE_KO.get(x, x) for x in seen)
+
+
+def _condition(detections: List[Dict]) -> str:
+    return "DAMAGE" if detections else "NO DAMAGE"
 
 
 def build_report_pdf(record: Dict, report: Dict) -> bytes:
-    """검수 레코드 + 보고서 섹션으로 EIR PDF 바이트를 생성한다."""
+    """검수 레코드 + 초안을 EIR 전표 양식으로 렌더링한다."""
     record = normalize_inspection_record(record)
-    r = _Report()
+    detections = record.get("detections") or []
+    decision = str(report.get("reuse_decision") or "USABLE").upper()
+    remarks = "\n".join(
+        p
+        for p in [
+            str(report.get("summary") or "").strip(),
+            str(report.get("damage_assessment") or "").strip(),
+            str(report.get("recommended_action") or "").strip(),
+            str(report.get("reuse_reason") or "").strip(),
+        ]
+        if p
+    ) or "-"
 
-    r.title("컨테이너 검수 보고서 (Equipment Interchange Receipt)")
+    f = _EirForm()
+    w = f._page_w
 
-    r.heading("1. 기본 정보 (General)")
-    r.kv("Event ID", str(record.get("event_id", "-")))
-    r.kv("Container ID", str(record.get("container_id", "-")))
-    r.kv("촬영 시각 (Captured At)", str(record.get("captured_at", "-")))
-    r.kv("처리 시각 (Processed At)", str(record.get("processed_at", "-")))
-    r.kv("검수 결과 (Result)", str(record.get("inspection_result", "-")))
-    r.kv("모델 (Model)", str(record.get("model_version", "-")))
+    # --- Header ---
+    f.banner()
 
-    r.heading("2. 위험도 (Risk)")
-    r.kv("Risk Score", str(record.get("risk_score", "-")))
-    r.kv("Risk Level", str(record.get("risk_level", "-")))
-    r.kv("손상 개수 (Detections)", str(record.get("detection_count", 0)))
+    # --- Equipment / Interchange ---
+    f.section("1. EQUIPMENT / INTERCHANGE INFORMATION")
+    f.row2(
+        ("Equipment No.", str(record.get("container_id") or "-")),
+        ("Reference No.", str(record.get("event_id") or "-")),
+    )
+    f.row2(
+        ("Date / Time In", str(record.get("captured_at") or "-")),
+        ("Processed At", str(record.get("processed_at") or "-")),
+    )
+    f.row2(
+        ("Equipment Condition", _condition(detections)),
+        ("Damage Types", _fmt_result_types(detections)),
+    )
+    f.row2(
+        ("Risk Level", str(record.get("risk_level") or "-")),
+        ("Risk Score", str(record.get("risk_score") or "-")),
+    )
 
-    r.heading("3. 손상 내역 (Damage Detections)")
-    for line in _fmt_detections(record.get("detections") or []):
-        r.paragraph(line)
+    # --- Condition checkboxes (EIR style) ---
+    f.section("2. CONDITION AT INTERCHANGE")
+    f.check_line("NO DAMAGE — 손상 없음, 정상 인수 가능", not bool(detections))
+    f.check_line("DAMAGE — 손상 확인됨 (하단 상세 기록)", bool(detections))
 
-    r.heading("4. 종합 소견 (Summary)")
-    r.paragraph(report.get("summary", ""))
+    # --- Damage table ---
+    f.section("3. DAMAGE DESCRIPTION")
+    cols = [
+        ("No.", w * 0.08),
+        ("Type", w * 0.18),
+        ("Severity", w * 0.18),
+        ("Location", w * 0.20),
+        ("Description", w * 0.36),
+    ]
+    f.table_header(cols)
+    if not detections:
+        f.table_row(
+            [
+                ("-", cols[0][1]),
+                ("NONE", cols[1][1]),
+                ("-", cols[2][1]),
+                ("-", cols[3][1]),
+                ("탐지된 손상 없음", cols[4][1]),
+            ]
+        )
+    else:
+        for i, d in enumerate(detections, 1):
+            raw = str(d.get("class") or "?").lower()
+            sev = str(d.get("severity") or "?").lower()
+            desc = str(d.get("description") or d.get("note") or "-")
+            if len(desc) > 42:
+                desc = desc[:40] + "…"
+            f.table_row(
+                [
+                    (str(i), cols[0][1]),
+                    (_TYPE_KO.get(raw, raw), cols[1][1]),
+                    (_SEV_KO.get(sev, sev), cols[2][1]),
+                    (str(d.get("location") or "-"), cols[3][1]),
+                    (desc, cols[4][1]),
+                ]
+            )
 
-    r.heading("5. 손상 평가 (Assessment)")
-    r.paragraph(report.get("damage_assessment", ""))
+    # --- Remarks ---
+    f.section("4. REMARKS / INSPECTOR COMMENTS")
+    f.multiline("Remarks", remarks, min_h=28)
 
-    r.heading("6. 권고 조치 (Recommended Action)")
-    r.paragraph(report.get("recommended_action", ""))
+    # --- Disposition ---
+    f.section("5. DISPOSITION / ACCEPTANCE")
+    f.row1("Decision", _DECISION_KO.get(decision, decision), label_w=40)
+    f.check_line("USABLE — 추가 조치 없이 재사용/인수 가능", decision == "USABLE")
+    f.check_line(
+        "REPAIR NEEDED — 수리 후 재사용", decision == "REPAIR_NEEDED"
+    )
+    f.check_line("REJECTED — 사용 불가 / 반출·정비 필요", decision == "REJECT")
 
-    r.heading("7. 재사용 판정 (Reuse Decision)")
-    r.kv("판정 (Decision)", str(report.get("reuse_decision", "-")))
-    r.paragraph(report.get("reuse_reason", ""))
+    # --- Sign-off ---
+    f.section("6. ACKNOWLEDGEMENT")
+    f.row2(("Inspected By", "AI Cloud Inspection"), ("Date", str(record.get("processed_at") or "-")))
+    f.row2(("Received By", "____________________"), ("Signature", "____________________"))
 
-    return r.output()
+    return f.output()

@@ -34,11 +34,10 @@ import { cn } from '@/lib/utils'
 import type { Inspection } from '@/lib/inspection-types'
 import { uniqueDamageFromInspection } from '@/lib/damage'
 import { getInspection } from '@/lib/api'
-import { isGateInflow } from '@/lib/status-filters'
+import { getDisplayStatus, isApproved, isGateInflow } from '@/lib/status-filters'
 import { SEVERITY_LABEL } from '@/lib/mock-inspections'
 import { AnnotatedImage } from './annotated-image'
 import { ReportBadge, RiskBadge, riskScoreColor, StatusBadge } from './status-badges'
-import { getDisplayStatus } from '@/lib/status-filters'
 import { formatCaptured, formatDateTime } from '@/lib/format'
 
 type ConfirmType = 'approve' | 'reject' | 'reinspect' | null
@@ -107,8 +106,9 @@ export function InspectionDetail({
 
   const report_status = inspection.report?.report_status ?? inspection.report_status ?? 'PENDING'
   const report_created_at = inspection.report?.report_created_at ?? inspection.report_created_at
-  // 게이트 유입(분석 중·수동 검수 대기)만 검수 액션 표시. 승인/보고서 완료는 숨김
-  const showReviewActions = isGateInflow(inspection)
+  // 게이트 유입: 승인/반려/재검수. 승인 완료: 재검수만.
+  const showReviewActions = isGateInflow(inspection) || isApproved(inspection)
+  const showApproveReject = isGateInflow(inspection)
   const isAnalyzing = inspection.review_status === 'PENDING_CLOUD_ANALYSIS'
 
   async function resolveReportUrl(): Promise<string | null> {
@@ -385,18 +385,19 @@ export function InspectionDetail({
           </div>
         </ScrollArea>
 
-        {/* Action footer — 승인/보고서 완료 건은 검수 액션 숨김 */}
+        {/* Action footer — 승인 완료는 재검수만 */}
         {showReviewActions && (
-          <div className="grid grid-cols-1 gap-2 border-t border-white/10 bg-slate-950 p-4 sm:grid-cols-3">
-            <Button
-              variant="secondary"
-              className={isAnalyzing ? 'sm:col-span-3' : undefined}
-              onClick={() => setConfirm('reinspect')}
-            >
+          <div
+            className={cn(
+              'grid gap-2 border-t border-white/10 bg-slate-950 p-4',
+              showApproveReject && !isAnalyzing ? 'grid-cols-1 sm:grid-cols-3' : 'grid-cols-1',
+            )}
+          >
+            <Button variant="secondary" onClick={() => setConfirm('reinspect')}>
               <RefreshCw className="size-4" />
               {isAnalyzing ? '재분석 다시 시도' : '재검수 요청'}
             </Button>
-            {!isAnalyzing && (
+            {showApproveReject && !isAnalyzing && (
               <>
                 <Button
                   variant="outline"

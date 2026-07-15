@@ -4,7 +4,6 @@
     "analysis_status": "COMPLETED",
     "model_name": "bedrock-vision-model",
     "inspection_result": "damage",
-    "confidence": 0.88,
     "detection_count": 1,
     "detections": [
       {

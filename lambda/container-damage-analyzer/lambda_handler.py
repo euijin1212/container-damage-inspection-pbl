@@ -219,7 +219,6 @@ def _build_success_update(
                 else:
                     det["bbox"] = edge_d["bbox"]
         detections.append(det)
-    confidences = [d.confidence for d in damages]
 
     # 위험도와 무관하게 전부 수동 검수
     return {
@@ -228,7 +227,6 @@ def _build_success_update(
             "analysis_status": "COMPLETED",
             "model_name": model_id,
             "inspection_result": "damage" if damages else "normal",
-            "confidence": round(max(confidences), 3) if confidences else 0.0,
             "detection_count": len(detections),
             "detections": detections,
         },

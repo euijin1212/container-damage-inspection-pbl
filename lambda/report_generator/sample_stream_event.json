@@ -28,7 +28,6 @@
               "analysis_status": { "S": "COMPLETED" },
               "model_name": { "S": "apac.anthropic.claude-sonnet-4-5-20250929-v1:0" },
               "inspection_result": { "S": "damage" },
-              "confidence": { "N": "0.88" },
               "detection_count": { "N": "2" },
               "detections": {
                 "L": [
