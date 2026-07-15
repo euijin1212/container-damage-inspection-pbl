@@ -226,7 +226,7 @@ Simulator가 YOLO 결과가 `DAMAGE_SUSPECTED`인 경우, S3 이미지 업로드
 |---|---|
 | `PENDING_CLOUD_ANALYSIS` | 클라우드 분석 대기 (PutItem 직후) |
 | `MANUAL_NEEDED` | 검수자 확인 필요 → 검수 큐 표시 |
-| `AUTO_OK` | 자동 통과 → 기본 검수 큐 미표시 |
+| `AUTO_OK` | (레거시) 과거 자동 통과. 신규 분석은 사용하지 않음 |
 | `INFERENCE_FAILED` | 분석 실패 → 실패/관리자 확인 큐 표시 |
 | `DONE` | 검수 완료 |
 
@@ -234,13 +234,12 @@ Simulator가 YOLO 결과가 `DAMAGE_SUSPECTED`인 경우, S3 이미지 업로드
 
 | risk_level | review_status |
 |---|---|
-| `HIGH` 또는 `MEDIUM` | `MANUAL_NEEDED` |
-| `LOW` | `AUTO_OK` |
+| `HIGH` / `MEDIUM` / `LOW` | `MANUAL_NEEDED` (전부 수동 검수) |
 
 ### Dashboard 표시 기준
 
 - `MANUAL_NEEDED` → 검수 큐 표시
-- `AUTO_OK` → 기본 검수 큐 미표시
+- `AUTO_OK` → 레거시 항목만 존재 가능
 - `INFERENCE_FAILED` → 실패 큐 또는 관리자 확인 큐 표시
 
 ### `report.report_status`

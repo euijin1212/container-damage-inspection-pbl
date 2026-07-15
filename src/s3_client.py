@@ -90,6 +90,24 @@ class S3ImageStore:
         image_format = _FORMAT_MAP.get(ext, "jpeg")
         return S3Image(bucket=bucket, key=key, body=body, image_format=image_format)
 
+    def upload(
+        self,
+        key: str,
+        body: bytes,
+        *,
+        bucket: Optional[str] = None,
+        content_type: str = "image/png",
+    ) -> str:
+        """바이트를 S3 에 업로드하고 key 를 반환한다."""
+        target = bucket or self.bucket
+        self._client.put_object(
+            Bucket=target,
+            Key=key,
+            Body=body,
+            ContentType=content_type,
+        )
+        return key
+
     def iter_images(self) -> Iterator[S3Image]:
         """프리픽스 하위 이미지를 순차적으로 다운로드하며 순회한다."""
         for key in self.list_image_keys():

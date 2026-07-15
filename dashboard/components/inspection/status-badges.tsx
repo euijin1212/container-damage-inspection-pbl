@@ -23,8 +23,19 @@ function Pill({ tone, children }: { tone: string; children: React.ReactNode }) {
   )
 }
 
-export function StatusBadge({ status }: { status: ReviewStatus }) {
-  const meta = STATUS_META[status]
+export function StatusBadge({
+  status,
+  label,
+  tone,
+}: {
+  status?: ReviewStatus
+  label?: string
+  tone?: string
+}) {
+  if (label) {
+    return <Pill tone={tone || 'muted'}>{label}</Pill>
+  }
+  const meta = STATUS_META[status as ReviewStatus]
   return <Pill tone={meta.tone}>{meta.label}</Pill>
 }
 

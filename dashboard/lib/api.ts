@@ -320,7 +320,7 @@ export async function getInspection(eventId: string): Promise<Inspection> {
 export async function reviewInspection(
   eventId: string,
   body: {
-    action: 'approve' | 'modify' | 'reject'
+    action: 'approve' | 'modify' | 'reject' | 'reinspect'
     reviewer?: string
     memo?: string
     risk_level?: string

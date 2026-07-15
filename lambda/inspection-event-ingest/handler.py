@@ -118,10 +118,7 @@ def _build_item(body: Dict, event_id: str, bucket: str, raw_image_key: str) -> D
         "cloud_analysis": {
             "analysis_status": "PENDING",
         },
-        "risk": {
-            "risk_score": None,
-            "risk_level": None,
-        },
+        # DynamoDB 는 None 불가 → 분석 전엔 risk 속성 자체를 넣지 않음
         "review_status": "PENDING_CLOUD_ANALYSIS",
         "report": {
             "report_status": "NOT_CREATED",

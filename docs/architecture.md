@@ -62,8 +62,8 @@ API Gateway는 하나를 사용합니다. route에 따라 Lambda integration만 
 
 ```text
 PENDING_CLOUD_ANALYSIS
-  → MANUAL_NEEDED      # HIGH/MEDIUM 위험도
-  → AUTO_OK            # LOW 위험도
+  → MANUAL_NEEDED      # 위험도와 무관, 전부 수동 검수
+  → INFERENCE_FAILED   # 분석 실패 시
   → INFERENCE_FAILED   # Bedrock/S3/분석 실패
   → DONE               # 검수 승인/수정 완료
   → 삭제               # 검수 반려(reject)

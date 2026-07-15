@@ -38,6 +38,7 @@ import type { Inspection, RiskLevel } from '@/lib/inspection-types'
 import {
   type StatusFilter,
   FILTER_LABEL,
+  getDisplayStatus,
   matchesStatusFilter,
 } from '@/lib/status-filters'
 import { riskScoreColor, StatusBadge } from './status-badges'
@@ -257,7 +258,7 @@ export function InspectionTable({
                     )}
                   </TableCell>
                   <TableCell>
-                    <StatusBadge status={i.review_status} />
+                    <StatusBadge {...getDisplayStatus(i)} />
                   </TableCell>
                   <TableCell className="text-right">
                     {isFailed ? (

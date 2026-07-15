@@ -29,15 +29,16 @@ import { Button } from '@/components/ui/button'
 import { Separator } from '@/components/ui/separator'
 import { Progress } from '@/components/ui/progress'
 import { ScrollArea } from '@/components/ui/scroll-area'
-import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { Textarea } from '@/components/ui/textarea'
 import { cn } from '@/lib/utils'
 import type { Inspection } from '@/lib/inspection-types'
 import { uniqueDamageFromInspection } from '@/lib/damage'
 import { getInspection } from '@/lib/api'
+import { isGateInflow } from '@/lib/status-filters'
 import { SEVERITY_LABEL } from '@/lib/mock-inspections'
 import { AnnotatedImage } from './annotated-image'
 import { ReportBadge, RiskBadge, riskScoreColor, StatusBadge } from './status-badges'
+import { getDisplayStatus } from '@/lib/status-filters'
 import { formatCaptured, formatDateTime } from '@/lib/format'
 
 type ConfirmType = 'approve' | 'reject' | 'reinspect' | null
@@ -50,7 +51,7 @@ interface InspectionDetailProps {
   queueTotal: number
   onApprove: (id: string) => void
   onReject: (id: string) => void
-  onReinspect: (id: string, comment: string) => void
+  onReinspect: (id: string, comment: string) => void | Promise<void>
   onGenerateReport: (id: string) => void
   /** 상세 재조회 후 상위 state 반영 (보고서 URL 등) */
   onRefreshDetail?: (inspection: Inspection) => void
@@ -75,9 +76,9 @@ export function InspectionDetail({
   onRefreshDetail,
 }: InspectionDetailProps) {
   const [activeDetection, setActiveDetection] = useState<string | null>(null)
-  const [imageTab, setImageTab] = useState('annotated')
   const [confirm, setConfirm] = useState<ConfirmType>(null)
   const [comment, setComment] = useState('')
+  const [actionBusy, setActionBusy] = useState(false)
   const [previewOpen, setPreviewOpen] = useState(false)
   const [downloadNote, setDownloadNote] = useState(false)
   const [reportLoading, setReportLoading] = useState(false)
@@ -87,7 +88,6 @@ export function InspectionDetail({
   // Reset transient UI whenever the inspection changes.
   useEffect(() => {
     setActiveDetection(null)
-    setImageTab('annotated')
     setConfirm(null)
     setComment('')
     setPreviewOpen(false)
@@ -107,6 +107,9 @@ export function InspectionDetail({
 
   const report_status = inspection.report?.report_status ?? inspection.report_status ?? 'PENDING'
   const report_created_at = inspection.report?.report_created_at ?? inspection.report_created_at
+  // 게이트 유입(분석 중·수동 검수 대기)만 검수 액션 표시. 승인/보고서 완료는 숨김
+  const showReviewActions = isGateInflow(inspection)
+  const isAnalyzing = inspection.review_status === 'PENDING_CLOUD_ANALYSIS'
 
   async function resolveReportUrl(): Promise<string | null> {
     if (!inspection) return null
@@ -152,12 +155,29 @@ export function InspectionDetail({
     setComment('')
   }
 
-  function runConfirm() {
-    if (!inspection) return
-    if (confirm === 'approve') onApprove(inspection.event_id)
-    if (confirm === 'reject') onReject(inspection.event_id)
-    if (confirm === 'reinspect') onReinspect(inspection.event_id, comment)
-    closeConfirm()
+  async function runConfirm() {
+    if (!inspection || actionBusy) return
+    if (confirm === 'approve') {
+      onApprove(inspection.event_id)
+      closeConfirm()
+      return
+    }
+    if (confirm === 'reject') {
+      onReject(inspection.event_id)
+      closeConfirm()
+      return
+    }
+    if (confirm === 'reinspect') {
+      setActionBusy(true)
+      try {
+        await onReinspect(inspection.event_id, comment)
+        closeConfirm()
+      } catch {
+        // 에러는 page 에서 banner 처리
+      } finally {
+        setActionBusy(false)
+      }
+    }
   }
 
   return (
@@ -173,7 +193,7 @@ export function InspectionDetail({
           <SheetTitle className="text-3xl font-bold tracking-tight text-white">{inspection.container_id}</SheetTitle>
           <div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-sm text-slate-400">
             <span>{formatCaptured(inspection.captured_at)}</span>
-            <StatusBadge status={inspection.review_status} />
+            <StatusBadge {...getDisplayStatus(inspection)} />
           </div>
           <div className="flex items-center gap-3">
             <span className={cn('text-4xl font-bold tabular-nums leading-none', riskScoreColor(inspection.risk_score))}>
@@ -186,35 +206,16 @@ export function InspectionDetail({
         <ScrollArea className="min-h-0 flex-1">
           <div className="space-y-6 p-5">
             {/* Images */}
-            <Tabs value={imageTab} onValueChange={setImageTab}>
-              <div className="flex items-center justify-between">
-                <h3 className="text-sm font-semibold text-slate-200">AI 분석 이미지</h3>
-                <TabsList className="bg-white/10 text-slate-400">
-                  <TabsTrigger value="annotated" className="text-slate-300 data-active:bg-white/15 data-active:text-white">
-                    AI 분석 이미지
-                  </TabsTrigger>
-                  <TabsTrigger value="original" className="text-slate-300 data-active:bg-white/15 data-active:text-white">
-                    원본 이미지
-                  </TabsTrigger>
-                </TabsList>
-              </div>
-              <TabsContent value="annotated" className="mt-3">
-                <AnnotatedImage
-                  src={inspection.annotated_s3_url || inspection.raw_image_url}
-                  alt={`${inspection.container_id} AI 분석 이미지`}
-                  detections={inspection.detections}
-                  activeId={activeDetection}
-                  onClearActive={() => setActiveDetection(null)}
-                />
-              </TabsContent>
-              <TabsContent value="original" className="mt-3">
-                <AnnotatedImage
-                  src={inspection.raw_image_url}
-                  alt={`${inspection.container_id} 원본 이미지`}
-                  annotated={false}
-                />
-              </TabsContent>
-            </Tabs>
+            <div>
+              <h3 className="mb-2 text-sm font-semibold text-slate-200">AI 분석 이미지</h3>
+              <AnnotatedImage
+                src={inspection.annotated_s3_url || inspection.raw_image_url}
+                alt={`${inspection.container_id} AI 분석 이미지`}
+                detections={inspection.detections}
+                activeId={activeDetection}
+                onClearActive={() => setActiveDetection(null)}
+              />
+            </div>
 
             {/* AI reading panel */}
             <div className="rounded-lg bg-slate-900">
@@ -261,7 +262,6 @@ export function InspectionDetail({
                     key={d.id}
                     type="button"
                     onClick={() => {
-                      setImageTab('annotated')
                       setActiveDetection((prev) => (prev === d.id ? null : d.id))
                     }}
                     className={cn(
@@ -385,22 +385,36 @@ export function InspectionDetail({
           </div>
         </ScrollArea>
 
-        {/* Action footer */}
-        <div className="grid grid-cols-1 gap-2 border-t border-white/10 bg-slate-950 p-4 sm:grid-cols-3">
-          <Button variant="secondary" onClick={() => setConfirm('reinspect')}>
-            <RefreshCw className="size-4" /> 재검수 요청
-          </Button>
-          <Button
-            variant="outline"
-            className="border-destructive/40 text-destructive hover:bg-destructive/10"
-            onClick={() => setConfirm('reject')}
-          >
-            <X className="size-4" /> 반려
-          </Button>
-          <Button className="bg-success text-success-foreground hover:bg-success/90" onClick={() => setConfirm('approve')}>
-            <Check className="size-4" /> 승인
-          </Button>
-        </div>
+        {/* Action footer — 승인/보고서 완료 건은 검수 액션 숨김 */}
+        {showReviewActions && (
+          <div className="grid grid-cols-1 gap-2 border-t border-white/10 bg-slate-950 p-4 sm:grid-cols-3">
+            <Button
+              variant="secondary"
+              className={isAnalyzing ? 'sm:col-span-3' : undefined}
+              onClick={() => setConfirm('reinspect')}
+            >
+              <RefreshCw className="size-4" />
+              {isAnalyzing ? '재분석 다시 시도' : '재검수 요청'}
+            </Button>
+            {!isAnalyzing && (
+              <>
+                <Button
+                  variant="outline"
+                  className="border-destructive/40 text-destructive hover:bg-destructive/10"
+                  onClick={() => setConfirm('reject')}
+                >
+                  <X className="size-4" /> 반려
+                </Button>
+                <Button
+                  className="bg-success text-success-foreground hover:bg-success/90"
+                  onClick={() => setConfirm('approve')}
+                >
+                  <Check className="size-4" /> 승인
+                </Button>
+              </>
+            )}
+          </div>
+        )}
       </SheetContent>
 
       {/* Confirm dialogs */}
@@ -421,22 +435,25 @@ export function InspectionDetail({
               '이 컨테이너 검수 건을 승인하시겠습니까? 승인 시 보고서가 자동 생성되며, 다음 검수 항목으로 이동합니다.'}
             {confirm === 'reject' &&
               '이 컨테이너 검수 건을 반려하시겠습니까? 관련 이미지·보고서(S3)와 검수 기록(DynamoDB)이 삭제됩니다.'}
-            {confirm === 'reinspect' && '이 컨테이너의 재검수를 요청하시겠습니까? 요청 사유를 남겨 주세요.'}
+            {confirm === 'reinspect' &&
+              'Foundation Model이 이미지 화질을 개선한 뒤, 검수 의견을 반영해 손상을 다시 감지합니다. 최대 약 60초 걸릴 수 있습니다.'}
           </p>
           {confirm === 'reinspect' && (
             <Textarea
               value={comment}
               onChange={(e) => setComment(e.target.value)}
-              placeholder="검수 의견을 입력하세요 (선택)"
+              placeholder="재검수 시 AI에 전달할 검수 의견 (선택)"
               rows={3}
+              disabled={actionBusy}
             />
           )}
           <DialogFooter className="gap-2 sm:justify-end">
-            <Button variant="outline" onClick={closeConfirm}>
+            <Button variant="outline" onClick={closeConfirm} disabled={actionBusy}>
               취소
             </Button>
             <Button
-              onClick={runConfirm}
+              onClick={() => void runConfirm()}
+              disabled={actionBusy}
               className={cn(
                 confirm === 'approve' && 'bg-success text-success-foreground hover:bg-success/90',
                 confirm === 'reject' && 'bg-destructive text-destructive-foreground hover:bg-destructive/90',
@@ -444,7 +461,7 @@ export function InspectionDetail({
             >
               {confirm === 'approve' && '승인'}
               {confirm === 'reject' && '반려'}
-              {confirm === 'reinspect' && '재검수 요청'}
+              {confirm === 'reinspect' && (actionBusy ? '재분석 중…' : '재검수 요청')}
             </Button>
           </DialogFooter>
         </DialogContent>

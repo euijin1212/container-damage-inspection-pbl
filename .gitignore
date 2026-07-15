@@ -21,6 +21,10 @@ edge-yolo/output_results/
 build/
 lambda_deploy.zip
 *.zip
+.next/
+node_modules/
+dashboard/node_modules/
+dashboard/.next/
 
 # ===== Python =====
 __pycache__/

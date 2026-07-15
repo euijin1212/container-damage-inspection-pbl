@@ -9,6 +9,7 @@ Model(예: Claude 3.5 Sonnet)로 손상 유형(구멍/찌그러짐/녹슴)과 �
 from __future__ import annotations
 
 import json
+import os
 import re
 from typing import List, Optional
 
@@ -71,7 +72,8 @@ _PROMPT = """당신은 항만 컨테이너 외관 검수 전문가입니다.
       "severity": "low|medium|high",
       "confidence": 0.0~1.0,
       "location": "상/중/하-좌/중/우 형식 (예: 하-우)",
-      "note": "간단한 근거"
+      "note": "간단한 근거",
+      "bbox_pct": {"x": 0, "y": 0, "width": 10, "height": 10}
     }
   ]
 }
@@ -79,6 +81,39 @@ _PROMPT = """당신은 항만 컨테이너 외관 검수 전문가입니다.
 이미지에 표시된 기존 bounding box 구역만 분석하세요.
 새 구역을 만들지 말고, 표시된 박스 안의 손상 유형/정도만 판정하세요.
 손상이 없다고 판단되면 "damages": [] 로 반환하세요.
+"""
+
+_REINSPECT_PROMPT = """당신은 항만 컨테이너 외관 검수 전문가입니다.
+이 이미지는 화질이 개선된 재검수용 사진입니다. 전체 이미지를 다시 정밀 검수하세요.
+검수자 재검수 의견이 있으면 반드시 반영하여 누락·오탐을 교정하세요.
+
+손상 유형은 반드시 다음 중 하나로 분류합니다:
+- "hole": 구멍/관통/천공
+- "dent": 찌그러짐/변형/찍힘
+- "rust": 녹슴/부식
+
+손상 정도(severity)는 다음 중 하나입니다:
+- "low": 경미
+- "medium": 중간
+- "high": 심각
+
+출력 JSON 스키마만 반환하세요 (설명 문장 금지):
+{
+  "damages": [
+    {
+      "type": "hole|dent|rust",
+      "severity": "low|medium|high",
+      "confidence": 0.0~1.0,
+      "location": "상/중/하-좌/중/우 형식 (예: 하-우)",
+      "note": "간단한 근거",
+      "bbox_pct": {"x": 0.0, "y": 0.0, "width": 10.0, "height": 10.0}
+    }
+  ]
+}
+
+bbox_pct 는 이미지 전체 대비 퍼센트(0~100)입니다.
+기존 박스에 묶이지 말고, 의견·화질 개선 결과를 바탕으로 실제 손상을 재감지하세요.
+손상이 없으면 "damages": [] 로 반환하세요.
 """
 
 
@@ -153,29 +188,69 @@ class BedrockDamageAnalyzer:
 
     def __init__(self, model_id: Optional[str] = None, client=None) -> None:
         self.model_id = model_id or settings.bedrock_model_id
-        self._client = client or boto3.client(
-            "bedrock-runtime", region_name=settings.bedrock_region
-        )
+        if client is not None:
+            self._client = client
+        else:
+            # Lambda 타임아웃(예: 90s) 전에 ReadTimeout 으로 실패시켜
+            # DynamoDB 실패 저장이 실행되도록 한다 (RUNNING 고착 방지)
+            from botocore.config import Config
 
-    def analyze(self, image_bytes: bytes, image_format: str = "jpeg") -> List[DamageItem]:
-        """이미지 1장을 분석해 손상 목록을 반환한다."""
+            cfg = Config(
+                connect_timeout=10,
+                read_timeout=int(os.getenv("BEDROCK_READ_TIMEOUT", "55")),
+                retries={"max_attempts": 2, "mode": "standard"},
+            )
+            self._client = boto3.client(
+                "bedrock-runtime",
+                region_name=settings.bedrock_region,
+                config=cfg,
+            )
+
+    def analyze(
+        self,
+        image_bytes: bytes,
+        image_format: str = "jpeg",
+        reviewer_note: Optional[str] = None,
+        *,
+        reinspect: bool = False,
+    ) -> List[DamageItem]:
+        """이미지 1장을 분석해 손상 목록을 반환한다.
+
+        reviewer_note 가 있으면 검수자 재검수 의견으로 프롬프트에 포함한다.
+        reinspect=True 이면 화질 개선본 기준 전체 재감지 프롬프트를 사용한다.
+        """
+        base = _REINSPECT_PROMPT if reinspect else _PROMPT
+        prompt = base
+        note = (reviewer_note or "").strip()
+        if note:
+            prompt = (
+                f"{base}\n\n"
+                "=== 검수자 재검수 의견 (반드시 참고) ===\n"
+                f"{note}\n"
+                "위 의견을 반영해 손상 유형·정도·위치·근거를 다시 판정하세요.\n"
+            )
+
+        fmt = (image_format or "jpeg").lower()
+        if fmt == "jpg":
+            fmt = "jpeg"
+
         response = self._client.converse(
             modelId=self.model_id,
             messages=[
                 {
                     "role": "user",
                     "content": [
-                        {"text": _PROMPT},
+                        {"text": prompt},
                         {
                             "image": {
-                                "format": image_format,
+                                "format": fmt,
                                 "source": {"bytes": image_bytes},
                             }
                         },
                     ],
                 }
             ],
-            inferenceConfig={"maxTokens": 1024, "temperature": 0.0},
+            inferenceConfig={"maxTokens": 2048, "temperature": 0.0},
         )
         text = self._extract_text(response)
         payload = _extract_json(text)

@@ -137,12 +137,20 @@ S3 ObjectCreated, prefix raw-images/
 lambda_handler.lambda_handler
 ```
 
+권장 구성:
+
+```text
+Timeout: 120초 (Bedrock converse 55초 read_timeout + 여유)
+Memory: 1024 MB 이상
+```
+
 환경변수:
 
 ```text
 AWS_REGION=ap-northeast-2
 BEDROCK_REGION=ap-northeast-2
-BEDROCK_MODEL_ID=apac.anthropic.claude-sonnet-4-5-20250929-v1:0
+BEDROCK_MODEL_ID=global.anthropic.claude-sonnet-4-5-20250929-v1:0
+BEDROCK_READ_TIMEOUT=55
 DDB_TABLE=InspectionEventTable
 S3_BUCKET=container-damage
 SNS_TOPIC_ARN=선택
@@ -156,8 +164,55 @@ s3:GetObject
 dynamodb:GetItem
 dynamodb:UpdateItem
 bedrock:InvokeModel
+bedrock:InvokeModelWithResponseStream
 sns:Publish          # SNS 사용 시
 ```
+
+역할 `container-damage-analyzer-role-*` 에 인라인/관리형 정책으로 추가 (콘솔 → Lambda → 구성 → 권한 → 역할 이름 클릭):
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "DynamoDBInspection",
+      "Effect": "Allow",
+      "Action": [
+        "dynamodb:GetItem",
+        "dynamodb:UpdateItem",
+        "dynamodb:PutItem"
+      ],
+      "Resource": "arn:aws:dynamodb:ap-northeast-2:963701985499:table/InspectionEventTable"
+    },
+    {
+      "Sid": "S3RawImages",
+      "Effect": "Allow",
+      "Action": ["s3:GetObject"],
+      "Resource": "arn:aws:s3:::container-damage/raw-images/*"
+    },
+    {
+      "Sid": "BedrockInvoke",
+      "Effect": "Allow",
+      "Action": [
+        "bedrock:InvokeModel",
+        "bedrock:InvokeModelWithResponseStream"
+      ],
+      "Resource": "*"
+    }
+  ]
+}
+```
+
+S3 트리거가 안 붙으면 업로드해도 analyzer 가 안 돕니다. 콘솔에서 확인:
+
+```text
+S3 → container-damage → 속성 → 이벤트 알림
+  → Event types: All object create
+  → Prefix: raw-images/
+  → Destination: Lambda container-damage-analyzer
+```
+
+멈춘 건(RUNNING, risk 없음) 은 대시보드 PENDING 목록 폴링이 analyzer 를 비동기 재호출합니다.
 
 ### `dashboard_api`
 
@@ -181,6 +236,10 @@ REVIEW_STATUS_INDEX=ReviewStatusIndex
 S3_BUCKET=container-damage
 PRESIGN_EXPIRES=3600
 CORS_ORIGIN=*
+  ANALYZER_FUNCTION_NAME=container-damage-analyzer
+BEDROCK_MODEL_ID=apac.anthropic.claude-sonnet-4-5-20250929-v1:0
+BEDROCK_IMAGE_MODEL_ID=amazon.nova-canvas-v1:0
+BEDROCK_IMAGE_REGION=us-east-1
 ```
 
 필수 IAM:
@@ -193,7 +252,37 @@ dynamodb:UpdateItem
 dynamodb:DeleteItem
 s3:GetObject
 s3:HeadObject
+s3:PutObject           # 재검수 화질개선 이미지 저장
 s3:DeleteObject
+bedrock:InvokeModel          # PENDING 복구 분석 + 재검수
+bedrock:InvokeModelWithResponseStream
+lambda:InvokeFunction        # PENDING 목록 폴링 시 analyzer 재호출
+```
+
+권장 설정:
+
+```text
+Timeout: 90초 이상 (재검수 Bedrock)
+Memory: 512MB 이상
+```
+
+재검수 흐름:
+
+```text
+원본 S3 이미지
+  → Nova Canvas IMAGE_VARIATION (화질 개선, us-east-1)
+  → enhanced-images/{event_id}.png 저장
+  → Claude 비전 + 검수 의견으로 재감지
+  → review_status=MANUAL_NEEDED
+```
+
+최초 유입 분석(원래 방식):
+
+```text
+ingest PutItem(PENDING)
+  → S3 raw-images/ 업로드
+  → container-damage-analyzer (S3 트리거)
+  → MANUAL_NEEDED | INFERENCE_FAILED
 ```
 
 ### `report_generator`

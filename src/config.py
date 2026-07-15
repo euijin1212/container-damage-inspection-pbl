@@ -58,25 +58,38 @@ def _get_float(name: str, default: float) -> float:
         return default
 
 
+def _env(name: str, default: str) -> str:
+    raw = os.getenv(name)
+    if raw is None or not str(raw).strip():
+        return default
+    return str(raw).strip()
+
+
 @dataclass(frozen=True)
 class Settings:
     # AWS 공통
-    aws_region: str = os.getenv("AWS_REGION", "ap-northeast-2")
+    aws_region: str = _env("AWS_REGION", "ap-northeast-2")
 
     # S3 (이미지 조회 버킷 · 서울 리전)
-    s3_bucket: str = os.getenv("S3_BUCKET", "container-damage")
-    s3_prefix: str = os.getenv("S3_PREFIX", "")
+    s3_bucket: str = _env("S3_BUCKET", "container-damage")
+    s3_prefix: str = os.getenv("S3_PREFIX", "") or ""
 
     # SageMaker (노트북/재분석 인스턴스 타입)
-    sagemaker_instance_type: str = os.getenv("SAGEMAKER_INSTANCE_TYPE", "ml.t3.medium")
+    sagemaker_instance_type: str = _env("SAGEMAKER_INSTANCE_TYPE", "ml.t3.medium")
 
     # Bedrock (서울 리전 Sonnet 4.5 는 apac/global 추론 프로파일 필요)
-    bedrock_region: str = os.getenv("BEDROCK_REGION") or os.getenv(
-        "AWS_REGION", "ap-northeast-2"
+    bedrock_region: str = _env(
+        "BEDROCK_REGION", _env("AWS_REGION", "ap-northeast-2")
     )
-    bedrock_model_id: str = os.getenv(
+    bedrock_model_id: str = _env(
         "BEDROCK_MODEL_ID", "apac.anthropic.claude-sonnet-4-5-20250929-v1:0"
     )
+
+    # 재검수 화질 개선 (Nova Canvas — 서울 미지원, 기본 us-east-1)
+    bedrock_image_model_id: str = _env(
+        "BEDROCK_IMAGE_MODEL_ID", "amazon.nova-canvas-v1:0"
+    )
+    bedrock_image_region: str = _env("BEDROCK_IMAGE_REGION", "us-east-1")
 
     # Bedrock Knowledge Base (보고서 RAG). 비우면 RAG 없이 동작
     knowledge_base_id: str = os.getenv("KNOWLEDGE_BASE_ID", "")

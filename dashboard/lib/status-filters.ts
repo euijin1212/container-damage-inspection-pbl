@@ -15,15 +15,44 @@ export function isGateInflow(inspection: Inspection) {
   )
 }
 
-/** 승인 완료 */
-export function isApproved(inspection: Inspection) {
-  return inspection.review_status === 'DONE' || inspection.review_status === 'AUTO_OK'
-}
-
-/** 보고서 생성 완료 */
+/** 보고서 작성 완료 */
 export function isReportCreated(inspection: Inspection) {
   const rs = getReportStatus(inspection)
   return rs === 'GENERATED' || rs === 'COMPLETED'
+}
+
+/** 승인 완료 (보고서 작성 완료 건은 제외 → 보고서 완료 화면에만) */
+export function isApproved(inspection: Inspection) {
+  if (isReportCreated(inspection)) return false
+  return inspection.review_status === 'DONE' || inspection.review_status === 'AUTO_OK'
+}
+
+/** 테이블/배지용 표시 상태 */
+export function getDisplayStatus(inspection: Inspection): {
+  label: string
+  tone: 'destructive' | 'warning' | 'info' | 'success' | 'muted'
+} {
+  if (isReportCreated(inspection)) {
+    return { label: '보고서 작성 완료', tone: 'success' }
+  }
+  const rs = getReportStatus(inspection)
+  if (rs === 'GENERATING') {
+    return { label: '보고서 생성 중', tone: 'info' }
+  }
+  const meta: Record<
+    string,
+    { label: string; tone: 'destructive' | 'warning' | 'info' | 'success' | 'muted' }
+  > = {
+    PENDING_CLOUD_ANALYSIS: { label: '분석 중', tone: 'info' },
+    MANUAL_NEEDED: { label: '수동 검수 필요', tone: 'destructive' },
+    AUDIT_REQUIRED: { label: '랜덤 감사 대상', tone: 'warning' },
+    AUTO_OK: { label: '자동 승인', tone: 'success' },
+    DONE: { label: '승인 완료', tone: 'muted' },
+    REPORT_PENDING: { label: '보고서 생성 대기', tone: 'info' },
+    REPORT_CREATED: { label: '보고서 작성 완료', tone: 'success' },
+    INFERENCE_FAILED: { label: '처리 실패', tone: 'destructive' },
+  }
+  return meta[inspection.review_status] || { label: inspection.review_status, tone: 'muted' }
 }
 
 export function matchesStatusFilter(inspection: Inspection, statusFilter: StatusFilter) {
@@ -35,6 +64,10 @@ export function matchesStatusFilter(inspection: Inspection, statusFilter: Status
     return rs === 'GENERATING' || inspection.review_status === 'REPORT_PENDING'
   }
   if (statusFilter === 'DONE') return isApproved(inspection)
+  // 보고서 작성 완료 건은 REPORT_CREATED 필터 외에서는 숨김
+  if (isReportCreated(inspection) && statusFilter !== 'REPORT_CREATED') {
+    return false
+  }
   return inspection.review_status === statusFilter
 }
 
@@ -47,6 +80,6 @@ export const FILTER_LABEL: Record<StatusFilter, string> = {
   AUTO_OK: '자동 승인',
   DONE: '승인 완료',
   REPORT_PENDING: '보고서 생성 대기',
-  REPORT_CREATED: '보고서 생성 완료',
+  REPORT_CREATED: '보고서 작성 완료',
   INFERENCE_FAILED: '처리 실패',
 }

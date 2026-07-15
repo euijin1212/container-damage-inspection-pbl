@@ -10,11 +10,14 @@
   GET  /inspections?status=MANUAL_NEEDED&date=YYYY-MM-DD
   GET  /inspections/{event_id}
   POST /inspections/{event_id}/review
-       body: { "action": "approve"|"modify"|"reject", "reviewer"?, "memo"?, "risk_level"? }
+       body: { "action": "approve"|"modify"|"reject"|"reinspect",
+               "reviewer"?, "memo"?, "risk_level"? }
   GET  /inspections/{event_id}/report
 
 검수 승인(approve/modify → review_status=DONE) 시 DynamoDB Streams 가
 report_generator 를 트리거해 EIR PDF 를 자동 생성한다.
+재검수(reinspect) 시 검수 의견을 포함해 Foundation Model 을 동기 재분석하고
+성공 시 항상 MANUAL_NEEDED 로 갱신한다 (PENDING 에 멈추지 않음).
 검수 반려(reject) 시 관련 S3 객체와 DynamoDB item 을 삭제한다.
 
 필요 환경변수:
@@ -23,6 +26,8 @@ report_generator 를 트리거해 EIR PDF 를 자동 생성한다.
   S3_BUCKET              이미지/보고서 버킷 (기본 container-damage)
   PRESIGN_EXPIRES        Presigned URL 만료(초, 기본 3600)
   CORS_ORIGIN            CORS Allow-Origin (기본 *)
+  BEDROCK_MODEL_ID       재검수 비전 모델 (src.config 기본값 사용 가능)
+  ANALYZER_FUNCTION_NAME PENDING kick 용 analyzer (기본 container-damage-analyzer)
 
 배포 핸들러: handler.lambda_handler
 """
@@ -49,6 +54,7 @@ for _p in (_HERE, os.path.abspath(os.path.join(_HERE, "..", ".."))):
         sys.path.insert(0, _p)
 
 from src.config import settings  # noqa: E402
+from src.reinspect_runner import run_reinspect_analysis  # noqa: E402
 from src.record_adapter import (  # noqa: E402
     REPORT_CREATED,
     REPORT_FAILED,
@@ -59,10 +65,12 @@ from src.record_adapter import (  # noqa: E402
 
 _ddb = boto3.resource("dynamodb", region_name=settings.aws_region)
 _s3 = boto3.client("s3", region_name=settings.aws_region)
+_lambda = boto3.client("lambda", region_name=settings.aws_region)
 
 _DEFAULT_TABLE = "InspectionEventTable"
 _DEFAULT_INDEX = "ReviewStatusIndex"
 _DEFAULT_BUCKET = "container-damage"
+_DEFAULT_ANALYZER = "container-damage-analyzer"
 
 # DynamoDB review_status → 프론트 status
 _REVIEW_TO_FRONT = {
@@ -434,18 +442,34 @@ def _serialize_item(item: Dict, *, detail: bool = False) -> Dict:
         out["reportUrl"] = report_url
         out["report_url"] = report_url
 
+    # 목록에도 썸네일 URL 포함 (detail 과 동일 버킷/키)
+    bucket = image.get("bucket") or _bucket()
+    raw_key = image.get("raw_image_key")
+    if raw_key and not detail:
+        key = _resolve_image_key(bucket, raw_key) if raw_key else None
+        thumb = _presign(bucket, key) if key else None
+        if thumb:
+            out["originalImage"] = thumb
+            out["raw_image_url"] = thumb
+            out["image_s3_url"] = thumb
+
     if detail:
         bucket = image.get("bucket") or _bucket()
         raw_key = image.get("raw_image_key")
         key = _resolve_image_key(bucket, raw_key) if raw_key else None
         original_url = _presign(bucket, key) if key else None
+        enhanced_key = image.get("enhanced_image_key")
+        enhanced_url = _presign(bucket, enhanced_key) if enhanced_key else None
+        # 재검수 후 화질 개선본이 있으면 AI 검수 뷰에 우선 표시
+        view_url = enhanced_url or original_url
 
         out.update(
             {
-                "originalImage": original_url,
-                "raw_image_url": original_url,
-                "image_s3_url": original_url,
-                "imageKey": key,
+                "originalImage": view_url,
+                "raw_image_url": view_url,
+                "image_s3_url": view_url,
+                "enhanced_image_url": enhanced_url,
+                "imageKey": enhanced_key or key,
                 "detections": detections_public,
                 "cloudAnalysis": cloud,
                 "edge": edge,
@@ -473,6 +497,61 @@ def _serialize_item(item: Dict, *, detail: bool = False) -> Dict:
             }
         )
     return out
+
+
+def _kick_analyzer_if_pending(event_id: str, cloud: Optional[Dict] = None) -> None:
+    """S3 트리거가 놓친 PENDING/멈춘 RUNNING 건을 analyzer Event 로 재호출.
+
+    dashboard 는 RUNNING 을 미리 찍지 않는다.
+    (미리 RUNNING 만 찍고 analyzer 가 실패/미실행이면 고착됨)
+    """
+    cloud = cloud or {}
+    analysis_status = cloud.get("analysis_status")
+    if analysis_status not in (None, "", "PENDING", "RUNNING"):
+        return
+
+    if analysis_status == "RUNNING":
+        started = cloud.get("started_at")
+        if started:
+            try:
+                started_dt = datetime.fromisoformat(str(started).replace("Z", "+00:00"))
+                age = (datetime.now(timezone.utc) - started_dt).total_seconds()
+                if age < 120:
+                    return
+                print(f"[kick] stale RUNNING age={int(age)}s event_id={event_id}")
+            except Exception:  # noqa: BLE001
+                print(f"[kick] invalid started_at → retry event_id={event_id}")
+        else:
+            print(f"[kick] RUNNING without started_at → retry event_id={event_id}")
+
+        try:
+            _table().update_item(
+                Key={"event_id": event_id},
+                UpdateExpression="SET cloud_analysis = :cloud",
+                ExpressionAttributeValues={
+                    ":cloud": {"analysis_status": "PENDING"},
+                    ":pending_review": "PENDING_CLOUD_ANALYSIS",
+                },
+                ConditionExpression=(
+                    "attribute_exists(event_id) AND review_status = :pending_review"
+                ),
+            )
+        except ClientError as exc:
+            print(f"[kick] PENDING 복구 실패 event_id={event_id}: {exc}")
+            return
+
+    fn = os.getenv("ANALYZER_FUNCTION_NAME", _DEFAULT_ANALYZER)
+    try:
+        _lambda.invoke(
+            FunctionName=fn,
+            InvocationType="Event",
+            Payload=json.dumps(
+                {"action": "analyze", "event_id": event_id}
+            ).encode("utf-8"),
+        )
+        print(f"[kick] analyzer Event queued fn={fn} event_id={event_id}")
+    except Exception as exc:  # noqa: BLE001
+        print(f"[kick] analyzer invoke 실패 event_id={event_id}: {exc}")
 
 
 def list_inspections(query: Dict[str, str]) -> Dict:
@@ -520,6 +599,16 @@ def list_inspections(query: Dict[str, str]) -> Dict:
                 ExclusiveStartKey=resp["LastEvaluatedKey"], **scan_kwargs
             )
             items.extend(resp.get("Items") or [])
+
+    # S3 트리거 누락 대비: PENDING 은 analyzer 만 비동기 kick (UX 는 분석 중 유지)
+    if status == "PENDING_CLOUD_ANALYSIS":
+        for it in items[:10]:
+            native = _to_native(it)
+            eid = str(native.get("event_id") or "")
+            if not eid:
+                continue
+            cloud = native.get("cloud_analysis") or {}
+            _kick_analyzer_if_pending(eid, cloud)
 
     serialized = [_serialize_item(it, detail=False) for it in items]
     # 고위험 우선
@@ -609,16 +698,38 @@ def _delete_s3_objects(targets: List[Tuple[str, str]]) -> List[str]:
     return deleted
 
 
+def _to_ddb(obj: Any) -> Any:
+    """float → Decimal, None 제거 (DynamoDB UpdateItem 용)."""
+
+    def _strip(o):
+        if isinstance(o, dict):
+            return {k: _strip(v) for k, v in o.items() if v is not None}
+        if isinstance(o, list):
+            return [_strip(v) for v in o]
+        return o
+
+    return json.loads(json.dumps(_strip(obj)), parse_float=Decimal)
+
+
 def review_inspection(event_id: str, body: Dict) -> Dict:
-    """검수 처리. approve/modify → DONE (보고서 트리거). reject → S3+DynamoDB 삭제."""
+    """검수 처리.
+
+    approve/modify → DONE (보고서 트리거).
+    reinspect → Foundation Model 동기 재분석 후 MANUAL_NEEDED.
+    reject → S3+DynamoDB 삭제.
+    """
     if not event_id:
         return _response(400, {"error": "event_id required"})
 
     action = str(body.get("action") or "").strip().lower()
-    if action not in ("approve", "modify", "reject"):
+    print(
+        f"[review] enter event_id={event_id} action={action!r} "
+        f"keys={list(body.keys())}"
+    )
+    if action not in ("approve", "modify", "reject", "reinspect"):
         return _response(
             400,
-            {"error": "action must be approve|modify|reject"},
+            {"error": "action must be approve|modify|reject|reinspect"},
         )
 
     table = _table()
@@ -654,6 +765,105 @@ def review_inspection(event_id: str, body: Dict) -> Dict:
                 "event_id": event_id,
                 "deleted": True,
                 "s3_deleted": s3_deleted,
+            },
+        )
+
+    if action == "reinspect":
+        native = _to_native(existing)
+        image = native.get("image") or {}
+        bucket = image.get("bucket") or _bucket()
+        key = image.get("raw_image_key")
+        if not key:
+            return _response(
+                400,
+                {"error": "raw_image_key missing; cannot reinspect", "event_id": event_id},
+            )
+        resolved = _resolve_image_key(bucket, key) or key
+        note = str(memo).strip()
+        edge = native.get("edge") or {}
+        edge_detections = list(edge.get("edge_detections") or [])
+
+        print(
+            f"[review] reinspect sync start event_id={event_id} "
+            f"s3://{bucket}/{resolved} note_len={len(note)} "
+            f"model={settings.bedrock_model_id} region={settings.bedrock_region}"
+        )
+        try:
+            fields = run_reinspect_analysis(
+                bucket=bucket,
+                key=resolved,
+                reviewer_note=note,
+                edge_detections=edge_detections,
+                reviewer=str(reviewer),
+            )
+        except Exception as exc:  # noqa: BLE001
+            print(f"[review] reinspect 분석 실패 event_id={event_id}: {exc}")
+            traceback.print_exc()
+            # 실패해도 PENDING 에 가두지 않고 수동 검수로 복구
+            try:
+                table.update_item(
+                    Key={"event_id": event_id},
+                    UpdateExpression=(
+                        "SET review_status = :rs, reviewer = :rv, review_memo = :memo, "
+                        "reviewed_at = :at, cloud_analysis = :cloud"
+                    ),
+                    ExpressionAttributeValues={
+                        ":rs": "MANUAL_NEEDED",
+                        ":rv": reviewer,
+                        ":memo": (note[:1000] if note else "재검수 실패")[:1000],
+                        ":at": now,
+                        ":cloud": {
+                            "analysis_status": "FAILED",
+                            "error_message": str(exc)[:500],
+                            "reinspect": True,
+                        },
+                    },
+                    ConditionExpression="attribute_exists(event_id)",
+                )
+            except ClientError:
+                pass
+            return _response(
+                502,
+                {
+                    "error": "reinspect analysis failed",
+                    "detail": str(exc),
+                    "event_id": event_id,
+                },
+            )
+
+        ddb_fields = _to_ddb(fields)
+        set_parts = [f"#{k} = :{k}" for k in ddb_fields]
+        names = {f"#{k}": k for k in ddb_fields}
+        values = {f":{k}": v for k, v in ddb_fields.items()}
+        try:
+            result = table.update_item(
+                Key={"event_id": event_id},
+                UpdateExpression="SET " + ", ".join(set_parts),
+                ExpressionAttributeNames=names,
+                ExpressionAttributeValues=values,
+                ConditionExpression="attribute_exists(event_id)",
+                ReturnValues="ALL_NEW",
+            )
+        except ClientError as exc:
+            if exc.response.get("Error", {}).get("Code") == "ConditionalCheckFailedException":
+                return _response(404, {"error": "not found", "event_id": event_id})
+            raise
+
+        updated = _to_native(result.get("Attributes") or {})
+        new_status = fields.get("review_status")
+        print(
+            f"[review] event_id={event_id} action=reinspect → "
+            f"review_status={new_status} "
+            f"detections={(fields.get('cloud_analysis') or {}).get('detection_count')}"
+        )
+        return _response(
+            200,
+            {
+                "ok": True,
+                "action": "reinspect",
+                "event_id": event_id,
+                "review_status": new_status,
+                "item": _serialize_item(updated, detail=True),
             },
         )
 

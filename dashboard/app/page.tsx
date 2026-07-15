@@ -158,6 +158,24 @@ export default function Page() {
     }
   }, [refreshList])
 
+  // 분석 중(PENDING)이면 상세를 주기적으로 갱신 (S3→analyzer 결과 반영)
+  useEffect(() => {
+    if (!selectedId || !open) return
+    const current = inspectionsRef.current.find((i) => i.event_id === selectedId)
+    if (current?.review_status !== 'PENDING_CLOUD_ANALYSIS') return
+
+    const id = setInterval(() => {
+      if (document.hidden) return
+      void getInspection(selectedId)
+        .then((detail) => {
+          setInspections((prev) => mergeInspections(prev, [detail]))
+        })
+        .catch(() => {})
+    }, POLLING_INTERVAL_MS)
+
+    return () => clearInterval(id)
+  }, [selectedId, open, selected?.review_status])
+
   async function handleSelect(inspection: Inspection) {
     setSelectedId(inspection.event_id)
     setOpen(true)
@@ -239,19 +257,34 @@ export default function Page() {
 
   async function handleReinspect(id: string, comment: string) {
     try {
+      const note = comment.trim()
       const updated = await reviewInspection(id, {
-        action: 'modify',
+        action: 'reinspect',
         reviewer: 'dashboard',
-        memo: comment.trim() || '재검수 요청',
+        memo: note,
       })
+      // 동기 재분석 완료 → MANUAL_NEEDED 로 반영
       patch(id, {
         ...(updated || {}),
-        reviewer_comment: comment.trim() || undefined,
+        reviewer_comment: note || undefined,
       })
-      goNext(id)
       await refreshList({ silent: true })
+      if (updated?.event_id) {
+        void getInspection(updated.event_id).then((detail) => {
+          setInspections((prev) => mergeInspections(prev, [detail]))
+        })
+      }
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
+      // API Gateway 타임아웃 후에도 Lambda 가 갱신했을 수 있어 상세 재조회
+      try {
+        const detail = await getInspection(id)
+        setInspections((prev) => mergeInspections(prev, [detail]))
+        await refreshList({ silent: true })
+      } catch {
+        /* ignore */
+      }
+      throw e
     }
   }
 

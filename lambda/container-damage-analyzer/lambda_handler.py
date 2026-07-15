@@ -14,11 +14,12 @@ from __future__ import annotations
 import json
 import os
 import sys
+import time
 import traceback
 import urllib.parse
 from datetime import datetime, timezone
 from decimal import Decimal
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 import boto3
 from botocore.exceptions import ClientError
@@ -62,8 +63,17 @@ def _now_iso() -> str:
 
 
 def _to_decimal(obj):
-    """DynamoDB 는 float 를 받지 못하므로 Decimal 로 변환 (None/null 은 그대로 유지)."""
-    return json.loads(json.dumps(obj), parse_float=Decimal, parse_int=Decimal)
+    """DynamoDB 는 float/None 을 받지 못하므로 Decimal 변환 + None 제거."""
+
+    def _strip(o):
+        if isinstance(o, dict):
+            return {k: _strip(v) for k, v in o.items() if v is not None}
+        if isinstance(o, list):
+            return [_strip(v) for v in o]
+        return o
+
+    cleaned = _strip(obj)
+    return json.loads(json.dumps(cleaned), parse_float=Decimal, parse_int=Decimal)
 
 
 def _should_alert(level: Optional[str]) -> bool:
@@ -211,16 +221,14 @@ def _build_success_update(
         detections.append(det)
     confidences = [d.confidence for d in damages]
 
-    review_status = (
-        "MANUAL_NEEDED" if risk.risk_level in ("HIGH", "MEDIUM") else "AUTO_OK"
-    )
+    # 위험도와 무관하게 전부 수동 검수
     return {
         "processed_at": _now_iso(),
         "cloud_analysis": {
             "analysis_status": "COMPLETED",
             "model_name": model_id,
             "inspection_result": "damage" if damages else "normal",
-            "confidence": round(max(confidences), 3) if confidences else None,
+            "confidence": round(max(confidences), 3) if confidences else 0.0,
             "detection_count": len(detections),
             "detections": detections,
         },
@@ -228,7 +236,7 @@ def _build_success_update(
             "risk_score": round(risk.risk_score, 1),
             "risk_level": risk.risk_level,
         },
-        "review_status": review_status,
+        "review_status": "MANUAL_NEEDED",
         "image": _build_image_meta(bucket, key, img_w, img_h),
     }
 
@@ -242,11 +250,11 @@ def _build_failure_update(error_message: str, bucket: str, key: str) -> Dict:
         "processed_at": _now_iso(),
         "cloud_analysis": {
             "analysis_status": "FAILED",
-            "error_message": error_message,
+            "error_message": error_message[:1000],
         },
         "risk": {
-            "risk_score": None,
-            "risk_level": None,
+            "risk_score": 0,
+            "risk_level": "LOW",
         },
         "review_status": "INFERENCE_FAILED",
         "image": _build_image_meta(bucket, key),
@@ -259,11 +267,12 @@ def _get_item(event_id: str) -> Optional[Dict]:
 
 
 def _is_pending_for_analysis(item: Dict) -> bool:
+    if item.get("review_status") != "PENDING_CLOUD_ANALYSIS":
+        return False
     cloud = item.get("cloud_analysis") or {}
-    return (
-        item.get("review_status") == "PENDING_CLOUD_ANALYSIS"
-        and cloud.get("analysis_status") == "PENDING"
-    )
+    status = cloud.get("analysis_status")
+    # RUNNING 은 이미 분석 시작됨(또는 kick 선점). force 경로에서만 재처리.
+    return status in (None, "", "PENDING", "RUNNING")
 
 
 def _update_dynamo(event_id: str, fields: Dict, *, require_pending: bool = False) -> bool:
@@ -296,11 +305,15 @@ def _update_dynamo(event_id: str, fields: Dict, *, require_pending: bool = False
             expr_names["#analysis_status"] = "analysis_status"
             expr_names["#review_status"] = "review_status"
             expr_values[":pending_analysis"] = "PENDING"
+            expr_values[":running_analysis"] = "RUNNING"
             expr_values[":pending_review"] = "PENDING_CLOUD_ANALYSIS"
+            # analysis_status 가 아직 없거나 PENDING/RUNNING 이면 갱신 허용
             condition = (
                 "attribute_exists(event_id) AND "
-                "#cloud.#analysis_status = :pending_analysis AND "
-                "#review_status = :pending_review"
+                "#review_status = :pending_review AND "
+                "(attribute_not_exists(#cloud.#analysis_status) OR "
+                "#cloud.#analysis_status = :pending_analysis OR "
+                "#cloud.#analysis_status = :running_analysis)"
             )
 
         table.update_item(
@@ -318,6 +331,20 @@ def _update_dynamo(event_id: str, fields: Dict, *, require_pending: bool = False
             )
             return False
         raise
+
+
+def _get_item_with_retry(event_id: str, *, attempts: int = 6, delay_sec: float = 1.0) -> Optional[Dict]:
+    """S3 업로드가 PutItem 보다 먼저 올 수 있어 짧게 재시도한다."""
+    last: Optional[Dict] = None
+    for i in range(attempts):
+        last = _get_item(event_id)
+        if last:
+            if i > 0:
+                print(f"[대기] event_id={event_id} DynamoDB item 확인 (시도 {i + 1}/{attempts})")
+            return last
+        if i + 1 < attempts:
+            time.sleep(delay_sec)
+    return last
 
 
 def _publish_alert(event_id: str, risk: Dict) -> bool:
@@ -340,14 +367,69 @@ def _publish_alert(event_id: str, risk: Dict) -> bool:
     return True
 
 
-def _process_target(bucket: str, key: str, event_id: str) -> Dict:
-    """단일 (bucket, key) 처리. 실패해도 다른 이미지에 영향 없도록 격리."""
-    existing = _get_item(event_id)
+def _resolve_existing_image_key(bucket: str, key: str) -> str:
+    """DDB 키와 S3 실제 확장자가 달라도 같은 stem 으로 찾는다."""
+    try:
+        _store._client.head_object(Bucket=bucket, Key=key)
+        return key
+    except ClientError:
+        pass
+    stem, ext = os.path.splitext(key)
+    for alt in _IMAGE_EXTS:
+        if alt.lower() == ext.lower():
+            continue
+        candidate = f"{stem}{alt}"
+        try:
+            _store._client.head_object(Bucket=bucket, Key=candidate)
+            print(f"[image] key fallback s3://{bucket}/{key} → {candidate}")
+            return candidate
+        except ClientError:
+            continue
+    return key
+
+
+def _mark_running(event_id: str) -> None:
+    """분석 시작 표시. 실패해도 본 분석은 계속한다."""
+    try:
+        _update_dynamo(
+            event_id,
+            {
+                "cloud_analysis": {
+                    "analysis_status": "RUNNING",
+                    "started_at": _now_iso(),
+                },
+            },
+            require_pending=False,
+        )
+    except Exception as exc:  # noqa: BLE001
+        print(f"[RUNNING 표시 실패] event_id={event_id}: {exc}")
+
+
+def _process_target(
+    bucket: str,
+    key: str,
+    event_id: str,
+    *,
+    force: bool = False,
+    reviewer_note: str = "",
+    reinspect: bool = False,
+) -> Dict:
+    """단일 (bucket, key) 처리. 실패해도 다른 이미지에 영향 없도록 격리.
+
+    force=True 이면 이미 분석된 item 도 강제 재처리한다.
+    reinspect=True 이면 재검수 메모 등 부가 필드를 함께 남긴다.
+    """
+    existing = _get_item_with_retry(event_id)
     if not existing:
         raise ItemNotFoundError(
             f"event_id={event_id} item이 DynamoDB에 없어 분석을 시작하지 않음"
         )
-    if not _is_pending_for_analysis(existing):
+    print(
+        f"[분석시작] event_id={event_id} force={force} "
+        f"review_status={existing.get('review_status')} "
+        f"model={_analyzer.model_id} s3://{bucket}/{key}"
+    )
+    if not force and not _is_pending_for_analysis(existing):
         cloud = existing.get("cloud_analysis") or {}
         reason = (
             f"review_status={existing.get('review_status')}, "
@@ -362,21 +444,61 @@ def _process_target(bucket: str, key: str, event_id: str) -> Dict:
             "analysis_status": cloud.get("analysis_status"),
         }
 
+    # DDB 에 저장된 키가 더 정확할 수 있음
+    image_meta = existing.get("image") or {}
+    ddb_bucket = image_meta.get("bucket") or bucket
+    ddb_key = image_meta.get("raw_image_key") or key
+    bucket = str(ddb_bucket)
+    key = _resolve_existing_image_key(bucket, str(ddb_key))
+
     edge = existing.get("edge") or {}
     edge_detections = list(edge.get("edge_detections") or [])
 
-    # --- 분석 단계 (실패 시 FAILED 업데이트 시도 후 예외 전파) ---
+    # --- 다운로드 먼저 (실패 시 RUNNING 으로 안 남김) ---
     try:
         image = _store.download_from(bucket, key)
-        damages = _analyzer.analyze(image.body, image.image_format)
+        print(
+            f"[다운로드] event_id={event_id} bytes={len(image.body)} fmt={image.image_format}"
+        )
+    except Exception as exc:  # noqa: BLE001
+        print(f"[다운로드실패] event_id={event_id}: {exc}")
+        traceback.print_exc()
+        try:
+            _update_dynamo(
+                event_id,
+                _build_failure_update(f"s3 download failed: {exc}", bucket, key),
+                require_pending=False,
+            )
+        except Exception as upd_exc:  # noqa: BLE001
+            print(f"[실패저장도 실패] event_id={event_id}: {upd_exc}")
+        raise
+
+    if not force:
+        _mark_running(event_id)
+
+    # --- 분석 단계 ---
+    try:
+        damages = _analyzer.analyze(
+            image.body,
+            image.image_format,
+            reviewer_note=reviewer_note or None,
+        )
         risk = calculate_risk(damages)
+        print(
+            f"[모델응답] event_id={event_id} damages={len(damages)} "
+            f"risk={risk.risk_level}/{risk.risk_score}"
+        )
     except Exception as exc:  # noqa: BLE001
         print(f"[분석실패] event_id={event_id}: {exc}")
-        _update_dynamo(
-            event_id,
-            _build_failure_update(str(exc), bucket, key),
-            require_pending=True,
-        )
+        traceback.print_exc()
+        try:
+            _update_dynamo(
+                event_id,
+                _build_failure_update(str(exc), bucket, key),
+                require_pending=False,
+            )
+        except Exception as upd_exc:  # noqa: BLE001
+            print(f"[실패저장도 실패] event_id={event_id}: {upd_exc}")
         raise
 
     img_w, img_h = _image_size(image.body, image.image_format)
@@ -392,7 +514,26 @@ def _process_target(bucket: str, key: str, event_id: str) -> Dict:
         img_w=img_w,
         img_h=img_h,
     )
-    if not _update_dynamo(event_id, update, require_pending=True):
+    if reviewer_note.strip():
+        update["review_memo"] = reviewer_note.strip()[:1000]
+
+    try:
+        ok = _update_dynamo(event_id, update, require_pending=not force)
+    except Exception as exc:  # noqa: BLE001
+        print(f"[업데이트실패] event_id={event_id}: {exc}")
+        traceback.print_exc()
+        ok = False
+
+    if not ok:
+        # PENDING 고착 방지: 조건 없이 재시도
+        try:
+            ok = _update_dynamo(event_id, update, require_pending=False)
+        except Exception as exc:  # noqa: BLE001
+            print(f"[업데이트 재시도 실패] event_id={event_id}: {exc}")
+            traceback.print_exc()
+            ok = False
+
+    if not ok:
         return {
             "event_id": event_id,
             "skipped": True,
@@ -401,17 +542,110 @@ def _process_target(bucket: str, key: str, event_id: str) -> Dict:
 
     notified = _publish_alert(event_id, update["risk"])
     print(
-        f"[분석완료] event_id={event_id} → {update['risk']['risk_level']} "
+        f"[분석완료] event_id={event_id} → {update['review_status']} "
+        f"risk={update['risk']['risk_level']} "
         f"(score={update['risk']['risk_score']}, "
         f"detections={update['cloud_analysis']['detection_count']}, "
-        f"notified={notified})"
+        f"force={force}, notified={notified})"
     )
     return {"event_id": event_id, **update}
 
 
+def _resolve_image_location(item: Dict) -> Tuple[str, str]:
+    """item.image 에서 (bucket, key) 를 얻는다."""
+    image = item.get("image") or {}
+    bucket = image.get("bucket") or os.getenv("S3_BUCKET") or settings.s3_bucket
+    key = image.get("raw_image_key")
+    if not bucket or not key:
+        raise ValueError("image.bucket / image.raw_image_key 가 없어 재검수할 수 없음")
+    return str(bucket), str(key)
+
+
+def _mark_reinspect_pending(event_id: str, reviewer_note: str) -> None:
+    """재검수 시작 전 상태를 분석 대기로 되돌린다."""
+    note = (reviewer_note or "").strip()
+    cloud: Dict = {
+        "analysis_status": "PENDING",
+        "reinspect": True,
+    }
+    if note:
+        cloud["reinspect_note"] = note[:500]
+    _update_dynamo(
+        event_id,
+        {
+            "review_status": "PENDING_CLOUD_ANALYSIS",
+            "cloud_analysis": cloud,
+            "review_memo": note[:1000] if note else "재검수 요청",
+        },
+        require_pending=False,
+    )
+
+
+def _process_reinspect(event_id: str, reviewer_note: str = "") -> Dict:
+    """대시보드 재검수: 기존 이미지로 Foundation Model 재분석."""
+    existing = _get_item(event_id)
+    if not existing:
+        raise ItemNotFoundError(f"event_id={event_id} item이 DynamoDB에 없음")
+
+    bucket, key = _resolve_image_location(existing)
+    note = (reviewer_note or "").strip()
+    print(f"[재검수] event_id={event_id} note_len={len(note)} s3://{bucket}/{key}")
+    _mark_reinspect_pending(event_id, note)
+    return _process_target(
+        bucket, key, event_id, force=True, reviewer_note=note, reinspect=True
+    )
+
+
 def lambda_handler(event: Dict, context=None) -> Dict:
+    event = event or {}
     results: List[Dict] = []
     errors: List[Dict] = []
+
+    # 진입 로그 (S3 트리거 여부 판별용)
+    records = event.get("Records") or []
+    print(
+        f"[handler] action={event.get('action')!r} "
+        f"event_id={event.get('event_id')!r} "
+        f"s3_records={len(records)} "
+        f"model={_analyzer.model_id}"
+    )
+    if records:
+        for i, rec in enumerate(records[:3]):
+            s3 = (rec or {}).get("s3") or {}
+            print(
+                f"[handler] record[{i}] "
+                f"bucket={(s3.get('bucket') or {}).get('name')} "
+                f"key={(s3.get('object') or {}).get('key')}"
+            )
+
+    # 대시보드/복구 직접 호출: { "action": "reinspect"|"analyze", "event_id": "...", ... }
+    if event.get("action") in ("reinspect", "analyze") and event.get("event_id"):
+        event_id = str(event["event_id"])
+        note = str(event.get("reviewer_note") or event.get("memo") or "")
+        try:
+            if event.get("action") == "reinspect":
+                results.append(_process_reinspect(event_id, note))
+            else:
+                # 분석 중으로 멈춘 건 강제 재처리
+                existing = _get_item(event_id)
+                if not existing:
+                    raise ItemNotFoundError(f"event_id={event_id} 없음")
+                bucket, key = _resolve_image_location(existing)
+                results.append(
+                    _process_target(bucket, key, event_id, force=True, reviewer_note=note)
+                )
+        except Exception as exc:  # noqa: BLE001
+            print(f"[오류] {event.get('action')} event_id={event_id}: {exc}")
+            traceback.print_exc()
+            errors.append({"event_id": event_id, "error": str(exc)})
+        return {
+            "statusCode": 200 if not errors else 207,
+            "mode": str(event.get("action")),
+            "processed": len(results),
+            "failed": len(errors),
+            "results": results,
+            "errors": errors,
+        }
 
     for target in _parse_s3_records(event):
         bucket, key = target["bucket"], target["key"]

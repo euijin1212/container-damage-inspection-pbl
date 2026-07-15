@@ -1,0 +1,12 @@
+{
+  "Records": [
+    {
+      "eventSource": "aws:s3",
+      "eventName": "ObjectCreated:Put",
+      "s3": {
+        "bucket": { "name": "container-damage" },
+        "object": { "key": "raw-images/EVT-20260715-0007.jpg" }
+      }
+    }
+  ]
+}
