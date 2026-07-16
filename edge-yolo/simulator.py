@@ -127,7 +127,7 @@ def run() -> None:
         # 손상 의심 → 이벤트 생성
         seq += 1
         captured_at = _now_utc()
-        event_id = f"EVT-{captured_at.strftime('%Y%m%d')}-{seq:04d}"
+        event_id = f"EVT-{captured_at.strftime('%Y%m%d-%H%M%S')}-{seq:04d}"
         payload = build_payload(event_id, captured_at, result, cfg)
 
         # bbox 이미지 렌더 + 로컬 사본(payload/이미지)
