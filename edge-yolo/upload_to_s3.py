@@ -18,12 +18,8 @@ def render_bbox(image_path: str, detections: List) -> bytes:
     img = cv2.imread(image_path)
     for d in detections:
         b = d.bbox
+        # 박스만 그린다(신뢰도 숫자·라벨 없음)
         cv2.rectangle(img, (b["x_min"], b["y_min"]), (b["x_max"], b["y_max"]), (0, 0, 255), 2)
-        label = f"{d.damage_class} {d.confidence:.2f}"
-        cv2.putText(
-            img, label, (b["x_min"], max(b["y_min"] - 6, 12)),
-            cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2,
-        )
     ok, buf = cv2.imencode(".jpg", img)
     if not ok:
         raise RuntimeError(f"JPEG 인코딩 실패: {image_path}")

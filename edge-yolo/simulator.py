@@ -84,7 +84,7 @@ def run() -> None:
         print("   edge-yolo/weights/stage1_best.pt 를 두거나 EDGE_MODEL_PATH 를 지정하세요.")
         return
 
-    detector = Stage1Detector(cfg.model_path, cfg.edge_conf, cfg.edge_imgsz)
+    detector = Stage1Detector(cfg.model_path, cfg.edge_conf, cfg.edge_imgsz, cfg.edge_iou)
 
     imgs = sorted(
         {
