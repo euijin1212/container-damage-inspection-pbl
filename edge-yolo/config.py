@@ -17,8 +17,6 @@ except ImportError:  # pragma: no cover
     pass
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
-os.environ.setdefault("YOLO_CONFIG_DIR", os.path.join(_HERE, ".ultralytics"))
-os.makedirs(os.environ["YOLO_CONFIG_DIR"], exist_ok=True)
 
 
 @dataclass(frozen=True)
@@ -40,6 +38,7 @@ class EdgeConfig:
     edge_model_name: str = os.getenv("EDGE_MODEL_NAME", "yolov8s-stage1")
     edge_conf: float = float(os.getenv("EDGE_CONF", "0.15"))  # 낮을수록 민감(놓침↓)
     edge_imgsz: int = int(os.getenv("EDGE_IMGSZ", "896"))
+    edge_iou: float = float(os.getenv("EDGE_IOU", "0.45"))    # NMS IoU(낮을수록 겹침 억제↑)
 
     # ===== 입출력 =====
     input_dir: str = os.getenv("EDGE_INPUT_DIR", os.path.join(_HERE, "input_images"))
