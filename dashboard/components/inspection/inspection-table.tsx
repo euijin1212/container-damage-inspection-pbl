@@ -60,11 +60,8 @@ const STATUS_PRIORITY: Record<string, number> = {
 // 드롭다운에 노출할 필터 (요약 카드 3종 + 세부 상태)
 const STATUS_OPTIONS: StatusFilter[] = [
   'GATE_INFLOW',
-  'PENDING_CLOUD_ANALYSIS',
-  'MANUAL_NEEDED',
   'DONE',
   'REPORT_CREATED',
-  'INFERENCE_FAILED',
 ]
 
 type InspectionImageFields = {
