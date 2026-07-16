@@ -317,7 +317,76 @@ s3:PutObject
 bedrock:InvokeModel
 ```
 
-## 5. Dashboard Frontend
+## 5. Edge Simulator
+
+위치:
+
+```text
+edge-yolo/
+```
+
+주요 파일:
+
+```text
+simulator.py       # 전체 실행 진입점
+infer.py           # Ultralytics YOLO 추론
+ingest_client.py   # API Gateway POST /inspection-events
+upload_to_s3.py    # bbox 렌더링 + presigned URL PUT
+config.py          # 환경변수/.env 설정
+requirements.txt   # 로컬 실행 의존성
+```
+
+로컬 실행 준비:
+
+```powershell
+python -m venv .venv-edge
+.\.venv-edge\Scripts\python.exe -m pip install -r edge-yolo\requirements.txt
+```
+
+환경변수:
+
+```text
+INGEST_API_URL=https://7tevpqwqmj.execute-api.ap-northeast-2.amazonaws.com
+INGEST_PATH=/inspection-events
+EDGE_MODEL_PATH=edge-yolo/weights/stage1_best.pt
+EDGE_INPUT_DIR=edge-yolo/input_images
+EDGE_OUTPUT_DIR=edge-yolo/output_results
+EDGE_CONF=0.15
+EDGE_IMGSZ=896
+EDGE_DRY_RUN=false
+EDGE_INTERACTIVE=true
+```
+
+실행:
+
+```powershell
+$env:EDGE_INTERACTIVE="false"
+.\.venv-edge\Scripts\python.exe edge-yolo\simulator.py
+```
+
+dry-run은 API Gateway/S3 호출 없이 payload JSON과 bbox JPEG만 생성합니다.
+
+```powershell
+$env:EDGE_DRY_RUN="true"
+.\.venv-edge\Scripts\python.exe edge-yolo\simulator.py
+```
+
+실제 연동 확인 결과(2026-07-16):
+
+```text
+container-dent.png → [EVT-20260716-054239-0001] POST 201 · S3 PUT 200 → raw-images/EVT-20260716-054239-0001.jpg
+dashboard_api GET /inspections/{event_id} → MANUAL_NEEDED, risk_level=MEDIUM, report_status=NOT_CREATED
+```
+
+주의:
+
+```text
+edge-yolo/weights/         # 모델 파일은 Git 제외
+edge-yolo/input_images/    # 테스트 입력 이미지 Git 제외
+edge-yolo/output_results/  # 생성 payload/bbox 이미지 Git 제외
+```
+
+## 6. Dashboard Frontend
 
 위치:
 

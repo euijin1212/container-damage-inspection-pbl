@@ -7,11 +7,14 @@
 
 ```text
 YOLO Simulator
- ├─ 1) POST /inspection-events ──> API Gateway ──> inspection-event-ingest
+ ├─ 1) 로컬 YOLO 추론(edge-yolo/simulator.py)
+ │     └─ DAMAGE_SUSPECTED 인 경우만 클라우드 전송
+ │
+ ├─ 2) POST /inspection-events ──> API Gateway ──> inspection-event-ingest
  │                                                       ├─ DynamoDB PutItem(PENDING)
  │                                                       └─ S3 presigned upload URL 반환
  │
- └─ 2) PUT image bytes ────────────────────────────────> S3 raw-images/{event_id}.jpg
+ └─ 3) PUT image bytes ────────────────────────────────> S3 raw-images/{event_id}.jpg
                                                            │
                                                            ▼
                                                  container-damage-analyzer
@@ -36,6 +39,22 @@ DynamoDB Stream(review_status=DONE)
 |---|---|---|
 | 이벤트 메타데이터, YOLO bbox/confidence | API Gateway → ingest Lambda | 작은 JSON, 인증/검증/DB 생성 처리 |
 | 원본 이미지 파일 | Simulator → S3 presigned URL | 대용량 파일은 S3 직접 업로드가 비용/속도/제한 면에서 적합 |
+
+## Edge Simulator
+
+로컬 시뮬레이터는 `edge-yolo/`에 구현되어 있습니다.
+
+| 파일 | 역할 |
+|---|---|
+| `edge-yolo/simulator.py` | 입력 이미지 순회, 이벤트 ID 생성, dry-run/실제 전송 실행 |
+| `edge-yolo/infer.py` | Ultralytics YOLO 추론 래퍼, `NORMAL`/`DAMAGE_SUSPECTED` 판정 |
+| `edge-yolo/ingest_client.py` | `POST /inspection-events` 호출 |
+| `edge-yolo/upload_to_s3.py` | bbox 렌더링 및 presigned URL S3 PUT |
+| `edge-yolo/config.py` | `.env`/환경변수 기반 실행 설정 |
+
+기본 이벤트 ID는 같은 날 재실행 충돌을 줄이기 위해 `EVT-YYYYMMDD-HHMMSS-0001` 형식을 사용합니다.
+2026-07-16 실제 연동 테스트에서 ingest API `201`, S3 PUT `200`, dashboard API 조회를 확인했습니다.
+시연용 손상 감지 모델은 `edge-yolo/weights/stage1_best.pt` 또는 `EDGE_MODEL_PATH`로 지정합니다.
 
 ## API Gateway
 

@@ -32,6 +32,7 @@ __pycache__/
 *.py[cod]
 *.egg-info/
 .venv/
+.venv-edge/
 venv/
 env/
 
@@ -46,4 +47,8 @@ Thumbs.db
 
 # RAG source scans (image-only PDFs; use .md guides instead)
 knowledge-base/**/*.pdf
+
+# Edge simulator local runtime config/cache
+edge-yolo/.ultralytics/
+edge-yolo/.matplotlib/
 

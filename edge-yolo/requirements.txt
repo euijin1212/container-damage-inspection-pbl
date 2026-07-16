@@ -1,0 +1,4 @@
+# 엣지 시뮬레이터 의존성 (로컬 실행용)
+ultralytics>=8.3.0      # 1단계 YOLO 추론 (opencv 포함)
+requests>=2.31.0        # ingest API POST + presigned URL PUT
+python-dotenv>=1.0.0    # .env 로드 (선택)

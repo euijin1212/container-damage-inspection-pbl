@@ -78,6 +78,7 @@ DynamoDB Stream(DONE)         → report_generator
 
 ```text
 container-damage-inspection-pbl/
+├─ edge-yolo/                          # 로컬 YOLO 엣지 시뮬레이터
 ├─ dashboard/                         # Next.js 검수자 대시보드
 ├─ lambda/
 │  ├─ inspection-event-ingest/         # API Gateway 이벤트 접수 Lambda
@@ -112,7 +113,37 @@ NEXT_PUBLIC_API_BASE=https://7tevpqwqmj.execute-api.ap-northeast-2.amazonaws.com
 
 ---
 
-## 6. Lambda 배포 패키지
+## 6. 로컬 엣지 시뮬레이터 실행
+
+시뮬레이터는 `edge-yolo/`에 구현되어 있습니다. 로컬 이미지에 YOLO 1차 탐지를 수행하고,
+손상 의심 건만 `POST /inspection-events`로 전송한 뒤 ingest Lambda가 반환한 presigned URL로
+이미지를 S3 `raw-images/`에 직접 업로드합니다.
+
+```powershell
+python -m venv .venv-edge
+.\.venv-edge\Scripts\python.exe -m pip install -r edge-yolo\requirements.txt
+
+# 실제 손상 감지 모델을 사용하는 경우
+$env:EDGE_MODEL_PATH="C:\path\to\stage1_best.pt"
+
+# 입력 이미지는 edge-yolo/input_images/에 둡니다.
+$env:EDGE_INTERACTIVE="false"
+.\.venv-edge\Scripts\python.exe edge-yolo\simulator.py
+```
+
+엔드포인트 호출 없이 payload/bbox 이미지 생성만 확인하려면 dry-run으로 실행합니다.
+
+```powershell
+$env:EDGE_DRY_RUN="true"
+.\.venv-edge\Scripts\python.exe edge-yolo\simulator.py
+```
+
+2026-07-16 기준 실제 API 연동 테스트에서 `POST /inspection-events` 201, S3 presigned PUT 200,
+대시보드 API 단건 조회까지 확인했습니다. 자세한 실행 옵션은 [docs/edge-simulator.md](docs/edge-simulator.md)를 봅니다.
+
+---
+
+## 7. Lambda 배포 패키지
 
 ```powershell
 # 이벤트 접수 Lambda
@@ -132,8 +163,9 @@ NEXT_PUBLIC_API_BASE=https://7tevpqwqmj.execute-api.ap-northeast-2.amazonaws.com
 
 ---
 
-## 7. 현재 미완성/결정 지점
+## 8. 현재 미완성/결정 지점
 
 - `inspection-event-ingest` Lambda는 `lambda/inspection-event-ingest/handler.py`에 구현되어 있습니다.
 - 권장 구조는 `POST /inspection-events`가 DynamoDB PENDING item을 만들고 S3 presigned upload URL을 반환하는 방식입니다.
 - YOLO 팀원이 AWS 자격증명을 직접 들고 DynamoDB/S3에 쓰는 방식도 동작은 가능하지만, 포트폴리오/보안 구조로는 ingest API 방식이 더 적합합니다.
+- 실제 시연 품질은 `edge-yolo/weights/stage1_best.pt` 손상 감지 모델 품질에 좌우됩니다. 공개 `yolov8n.pt`는 파이프라인 검증용으로만 사용합니다.
