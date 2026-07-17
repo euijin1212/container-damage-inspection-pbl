@@ -314,6 +314,88 @@ def _normalize_box(
     return None
 
 
+_SEV_KO_UI = {"low": "경미", "medium": "보통", "high": "심각", "LOW": "경미", "MEDIUM": "보통", "HIGH": "심각"}
+_TYPE_KO_UI = {
+    "hole": "구멍",
+    "dent": "찌그러짐",
+    "rust": "녹/부식",
+}
+
+
+def _format_judgment_lines(text: str) -> str:
+    """한 줄로 붙은 '1) … 2) …' 형태를 줄바꿈으로 나눈다."""
+    t = (text or "").strip()
+    if not t:
+        return t
+    if "\n" in t:
+        return t
+    # "총 N건… 1) … 2) …" → 번호 앞에서 개행
+    t = re.sub(r"\s+(\d+\))\s*", r"\n\1 ", t)
+    t = re.sub(
+        r"\s+(유형·위치·정도를 종합하면)",
+        r"\n\1",
+        t,
+    )
+    return t.strip()
+
+
+def _build_ai_summary(
+    cloud: Dict,
+    detections: List[Dict],
+    detected_damage: str,
+) -> str:
+    """AI 판단 근거 텍스트. judgment_basis 우선, 없으면 detection 설명으로 합성."""
+    stored = str(
+        cloud.get("judgment_basis")
+        or cloud.get("overall_judgment")
+        or cloud.get("ai_summary")
+        or ""
+    ).strip()
+    if stored and not _is_label_only_summary(stored):
+        return _format_judgment_lines(stored)[:1200]
+
+    if not detections:
+        if cloud.get("inspection_result") == "normal":
+            return (
+                "이미지에서 구멍·찌그러짐·녹 등 유의미한 외관 손상이 확인되지 않았습니다.\n"
+                "현재 탐지 결과만으로는 구조적 위험이 낮아 보입니다."
+            )
+        return _format_judgment_lines(stored or detected_damage) or (
+            "AI 판독 요약이 아직 생성되지 않았습니다."
+        )
+
+    parts = []
+    for i, d in enumerate(detections, 1):
+        label = str(d.get("label") or d.get("damage_class") or "손상").strip()
+        t = _TYPE_KO_UI.get(label.lower(), label)
+        sev_raw = str(d.get("severity") or "").strip()
+        sev = _SEV_KO_UI.get(sev_raw, sev_raw or "미상")
+        loc = str(d.get("location") or "위치 미상").strip()
+        desc = str(d.get("description") or d.get("note") or "").strip()
+        if desc:
+            parts.append(f"{i}) {loc} — {t}({sev}): {desc}")
+        else:
+            parts.append(f"{i}) {loc} — {t}({sev}) 확인")
+
+    return (
+        f"총 {len(detections)}건의 손상이 탐지되었습니다.\n"
+        + "\n".join(parts)
+        + "\n유형·위치·정도를 종합하면 수동 검수로 최종 확인하는 것이 적절합니다."
+    )[:1200]
+
+
+def _is_label_only_summary(text: str) -> bool:
+    """'rust, dent' 처럼 유형명만 나열된 요약인지 판별."""
+    t = (text or "").strip()
+    if not t or len(t) >= 60:
+        return False
+    if "," not in t and " " not in t:
+        return t.lower() in {"hole", "dent", "rust", "구멍", "찌그러짐", "녹"}
+    labels = {x.strip().lower() for x in re.split(r"[,/|]", t) if x.strip()}
+    allowed = {"hole", "dent", "rust", "구멍", "찌그러짐", "녹", "녹/부식", "녹슴"}
+    return bool(labels) and labels <= allowed
+
+
 def _serialize_detection(
     d: Dict,
     idx: int,
@@ -401,6 +483,9 @@ def _serialize_item(item: Dict, *, detail: bool = False) -> Dict:
         "탐지된 손상 없음" if cloud.get("inspection_result") == "normal" else "손상 의심"
     )
 
+    # AI 판단 근거: 분석기 overall_judgment 우선, 없으면 detection 설명으로 합성
+    ai_summary = _build_ai_summary(cloud, detections, detected_damage)
+
     # 응답 detections 에서는 confidence 미노출 (위험도 계산은 analyzer 내부에서 수행)
     detections_public = [
         {k: v for k, v in d.items() if k != "confidence"} for d in detections
@@ -417,6 +502,8 @@ def _serialize_item(item: Dict, *, detail: bool = False) -> Dict:
         "processedAt": item.get("processed_at"),
         "detectedDamage": detected_damage,
         "damage_summary": detected_damage,
+        "aiSummary": ai_summary,
+        "ai_summary": ai_summary,
         "riskScore": risk.get("risk_score"),
         "risk_score": risk.get("risk_score"),
         "riskLevel": risk.get("risk_level"),
@@ -485,9 +572,15 @@ def _serialize_item(item: Dict, *, detail: bool = False) -> Dict:
                     "report_summary": report.get("report_summary"),
                     "error_message": report.get("error_message"),
                 },
-                "aiSummary": report.get("report_summary")
-                or cloud.get("error_message")
-                or detected_damage,
+                # 상세: 분석 judgment_basis 유지. 보고서 요약은 report 쪽에 별도.
+                "aiSummary": ai_summary
+                if ai_summary
+                else (
+                    report.get("report_summary")
+                    or cloud.get("error_message")
+                    or detected_damage
+                ),
+                "ai_summary": ai_summary,
                 "verdict": report.get("reuse_decision") or "",
                 "reviewerComment": item.get("review_memo"),
                 "errorMessage": (cloud.get("error_message") if review == "INFERENCE_FAILED" else None)

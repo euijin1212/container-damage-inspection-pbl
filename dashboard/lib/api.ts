@@ -241,9 +241,39 @@ export function toInspection(raw: Record<string, unknown>): Inspection {
         : typeof raw.reviewerComment === 'string'
           ? raw.reviewerComment
           : undefined,
-    ai_summary: String(
-      raw.ai_summary || raw.aiSummary || damageSummary || '',
-    ),
+    ai_summary: (() => {
+      const fromApi = String(raw.ai_summary || raw.aiSummary || '').trim()
+      // 유형명만 나열된 값("rust, dent")은 detection 설명으로 대체
+      const labelOnly =
+        fromApi.length > 0 &&
+        fromApi.length < 40 &&
+        /^[\s,|/]*(hole|dent|rust|구멍|찌그러짐|녹\/?부식|녹슴)([\s,|/]+(hole|dent|rust|구멍|찌그러짐|녹\/?부식|녹슴))*[\s,|/]*$/i.test(
+          fromApi,
+        )
+      const withBreaks = (text: string) =>
+        text
+          .replace(/\s+(\d+\))\s*/g, '\n$1 ')
+          .replace(/\s+(유형·위치·정도를 종합하면)/g, '\n$1')
+          .trim()
+      if (fromApi && !labelOnly) return withBreaks(fromApi)
+      const fromDetections = detections
+        .map((d, i) => {
+          const desc = (d.description || '').trim()
+          const label = (d.label || '손상').trim()
+          const sev = d.severity || ''
+          if (desc) return `${i + 1}) ${label}${sev ? `(${sev})` : ''}: ${desc}`
+          return ''
+        })
+        .filter(Boolean)
+      if (fromDetections.length > 0) {
+        return [
+          `총 ${detections.length}건의 손상이 탐지되었습니다.`,
+          ...fromDetections,
+          '유형·위치·정도를 종합하면 수동 검수로 최종 확인하는 것이 적절합니다.',
+        ].join('\n')
+      }
+      return withBreaks(fromApi || damageSummary || '')
+    })(),
     verdict: String(raw.verdict || ''),
     error_message:
       typeof raw.error_message === 'string'

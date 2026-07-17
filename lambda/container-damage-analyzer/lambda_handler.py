@@ -191,6 +191,7 @@ def _build_success_update(
     edge_detections: Optional[List] = None,
     img_w: Optional[int] = None,
     img_h: Optional[int] = None,
+    judgment_basis: str = "",
 ) -> Dict:
     """분석 성공 시 UpdateItem 대상 필드(nested)를 구성한다.
 
@@ -220,16 +221,21 @@ def _build_success_update(
                     det["bbox"] = edge_d["bbox"]
         detections.append(det)
 
+    cloud: Dict = {
+        "analysis_status": "COMPLETED",
+        "model_name": model_id,
+        "inspection_result": "damage" if damages else "normal",
+        "detection_count": len(detections),
+        "detections": detections,
+    }
+    basis = (judgment_basis or "").strip()
+    if basis:
+        cloud["judgment_basis"] = basis[:1200]
+
     # 위험도와 무관하게 전부 수동 검수
     return {
         "processed_at": _now_iso(),
-        "cloud_analysis": {
-            "analysis_status": "COMPLETED",
-            "model_name": model_id,
-            "inspection_result": "damage" if damages else "normal",
-            "detection_count": len(detections),
-            "detections": detections,
-        },
+        "cloud_analysis": cloud,
         "risk": {
             "risk_score": round(risk.risk_score, 1),
             "risk_level": risk.risk_level,
@@ -476,15 +482,18 @@ def _process_target(
 
     # --- 분석 단계 ---
     try:
-        damages = _analyzer.analyze(
+        analysis = _analyzer.analyze(
             image.body,
             image.image_format,
             reviewer_note=reviewer_note or None,
         )
+        damages = analysis.damages
+        judgment_basis = analysis.judgment_basis
         risk = calculate_risk(damages)
         print(
             f"[모델응답] event_id={event_id} damages={len(damages)} "
-            f"risk={risk.risk_level}/{risk.risk_score}"
+            f"risk={risk.risk_level}/{risk.risk_score} "
+            f"judgment_len={len(judgment_basis or '')}"
         )
     except Exception as exc:  # noqa: BLE001
         print(f"[분석실패] event_id={event_id}: {exc}")
@@ -511,6 +520,7 @@ def _process_target(
         edge_detections=edge_detections,
         img_w=img_w,
         img_h=img_h,
+        judgment_basis=judgment_basis,
     )
     if reviewer_note.strip():
         update["review_memo"] = reviewer_note.strip()[:1000]

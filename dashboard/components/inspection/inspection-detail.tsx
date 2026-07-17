@@ -244,7 +244,7 @@ export function InspectionDetail({
               </div>
               <div className="border-t border-border p-5 dark:border-white/10">
                 <p className="text-xs text-muted-foreground dark:text-slate-400">AI 판단 근거</p>
-                <p className="mt-2 text-sm leading-6 text-muted-foreground text-pretty dark:text-slate-300">
+                <p className="mt-2 whitespace-pre-line text-sm leading-6 text-muted-foreground text-pretty dark:text-slate-300">
                   {inspection.ai_summary || 'AI 판독 요약이 아직 생성되지 않았습니다.'}
                 </p>
               </div>

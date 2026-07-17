@@ -91,6 +91,7 @@ def build_reinspect_success_fields(
     enhanced_image_key: Optional[str] = None,
     enhance_model_id: Optional[str] = None,
     enhance_fallback: bool = False,
+    judgment_basis: str = "",
 ) -> Dict[str, Any]:
     edge_detections = edge_detections or []
     detections = []
@@ -136,6 +137,9 @@ def build_reinspect_success_fields(
         "image_enhanced": bool(enhanced_image_key) and not enhance_fallback,
         "enhance_fallback": enhance_fallback,
     }
+    basis = (judgment_basis or "").strip()
+    if basis:
+        cloud["judgment_basis"] = basis[:1200]
     if enhance_model_id:
         cloud["enhance_model"] = enhance_model_id
     if note:
@@ -166,6 +170,7 @@ def build_standard_success_fields(
     edge_detections: Optional[List] = None,
     img_w: Optional[int] = None,
     img_h: Optional[int] = None,
+    judgment_basis: str = "",
 ) -> Dict[str, Any]:
     """최초 클라우드 분석 성공 필드 (항상 MANUAL_NEEDED)."""
     edge_detections = edge_detections or []
@@ -198,15 +203,20 @@ def build_standard_success_fields(
         image_meta["width"] = int(img_w)
         image_meta["height"] = int(img_h)
 
+    cloud: Dict[str, Any] = {
+        "analysis_status": "COMPLETED",
+        "model_name": model_id,
+        "inspection_result": "damage" if damages else "normal",
+        "detection_count": len(detections),
+        "detections": detections,
+    }
+    basis = (judgment_basis or "").strip()
+    if basis:
+        cloud["judgment_basis"] = basis[:1200]
+
     return {
         "processed_at": _now_iso(),
-        "cloud_analysis": {
-            "analysis_status": "COMPLETED",
-            "model_name": model_id,
-            "inspection_result": "damage" if damages else "normal",
-            "detection_count": len(detections),
-            "detections": detections,
-        },
+        "cloud_analysis": cloud,
         "risk": {
             "risk_score": round(risk.risk_score, 1),
             "risk_level": risk.risk_level,
@@ -224,7 +234,8 @@ def run_standard_analysis(
 ) -> Dict[str, Any]:
     """최초 유입 이미지 Foundation Model 분석 (화질개선 없음)."""
     image = _store.download_from(bucket, key)
-    damages = _analyzer.analyze(image.body, image.image_format, reinspect=False)
+    analysis = _analyzer.analyze(image.body, image.image_format, reinspect=False)
+    damages = analysis.damages
     risk = calculate_risk(damages)
     img_w, img_h = _image_size(image.body, image.image_format)
     return build_standard_success_fields(
@@ -236,6 +247,7 @@ def run_standard_analysis(
         edge_detections=edge_detections,
         img_w=img_w,
         img_h=img_h,
+        judgment_basis=analysis.judgment_basis,
     )
 
 
@@ -274,12 +286,13 @@ def run_reinspect_analysis(
             print(f"[reinspect] enhanced upload 실패 (분석은 계속): {exc}")
             enhanced_key = None
 
-    damages = _analyzer.analyze(
+    analysis = _analyzer.analyze(
         analyze_bytes,
         analyze_fmt,
         reviewer_note=reviewer_note or None,
         reinspect=True,
     )
+    damages = analysis.damages
     risk = calculate_risk(damages)
     img_w, img_h = _image_size(analyze_bytes, analyze_fmt)
     return build_reinspect_success_fields(
@@ -296,4 +309,5 @@ def run_reinspect_analysis(
         enhanced_image_key=enhanced_key,
         enhance_model_id=enhanced.model_id,
         enhance_fallback=enhanced.used_fallback,
+        judgment_basis=analysis.judgment_basis,
     )
