@@ -136,31 +136,91 @@ class _EirForm:
 
     def row1(self, label: str, value: str, label_w: float = 40) -> None:
         self.pdf.set_font(self.family, size=9)
+        line_h = 5.0
+        pad = 1.2
         vw = self._page_w - label_w
-        self.pdf.cell(label_w, 8, self._t(label), border=1)
-        self.pdf.cell(vw, 8, self._t(value), border=1, new_x="LMARGIN", new_y="NEXT")
-
-    def multiline(self, label: str, text: str, min_h: float = 20) -> None:
-        self.pdf.set_font(self.family, size=9)
-        label_w = 40
-        val_w = self._page_w - label_w
+        text_w = max(10.0, vw - 2 * pad)
+        body = self._t(value or "-")
+        text_h = self._text_height(body, text_w, line_h)
+        h = max(8.0, text_h + 2 * pad)
         x0 = self.pdf.l_margin
+        self._ensure_space(h)
         y0 = self.pdf.get_y()
 
-        # 값 높이 측정
-        self.pdf.set_xy(x0 + label_w, y0)
-        self.pdf.multi_cell(val_w, 5, self._t(text or "-"), border=0)
-        y1 = self.pdf.get_y()
-        h = max(min_h, y1 - y0)
+        self.pdf.rect(x0, y0, label_w, h)
+        self.pdf.rect(x0 + label_w, y0, vw, h)
+        self.pdf.set_xy(x0, y0 + (h - line_h) / 2)
+        self.pdf.cell(label_w, line_h, self._t(label), border=0, align="C")
+        self.pdf.set_xy(x0 + label_w + pad, y0 + pad)
+        self.pdf.multi_cell(text_w, line_h, body, border=0)
+        self.pdf.set_xy(x0, y0 + h)
 
-        # 라벨 + 테두리 다시 그림
-        self.pdf.set_xy(x0, y0)
-        self.pdf.cell(label_w, h, self._t(label), border=1)
-        self.pdf.set_xy(x0 + label_w, y0)
-        self.pdf.multi_cell(val_w, 5, self._t(text or "-"), border=1)
-        # multi_cell 후 y 보정
-        if self.pdf.get_y() < y0 + h:
-            self.pdf.set_y(y0 + h)
+    def _ensure_space(self, h: float) -> None:
+        """남은 페이지 높이가 부족하면 새 페이지."""
+        if self.pdf.get_y() + h > self.pdf.page_break_trigger:
+            self.pdf.add_page()
+
+    def _text_height(self, text: str, width: float, line_h: float) -> float:
+        """multi_cell 높이 측정 (그리기 없음)."""
+        body = text if text else "-"
+        try:
+            return float(
+                self.pdf.multi_cell(
+                    width,
+                    line_h,
+                    body,
+                    border=0,
+                    dry_run=True,
+                    output="HEIGHT",
+                )
+            )
+        except TypeError:
+            return self._estimate_height(body, width, line_h)
+
+    def _estimate_height(self, text: str, width: float, line_h: float) -> float:
+        if not text:
+            return line_h
+        lines = 1
+        cur = 0.0
+        for ch in text:
+            if ch == "\n":
+                lines += 1
+                cur = 0.0
+                continue
+            w = self.pdf.get_string_width(ch)
+            if cur + w > width and cur > 0:
+                lines += 1
+                cur = w
+            else:
+                cur += w
+        return lines * line_h
+
+    def multiline(self, label: str, text: str, min_h: float = 20) -> None:
+        """라벨+값 멀티라인 칸. 긴 텍스트도 칸 안에 줄바꿈·높이 맞춤."""
+        self.pdf.set_font(self.family, size=9)
+        label_w = 40.0
+        pad = 2.0
+        line_h = 5.0
+        val_w = self._page_w - label_w
+        text_w = max(10.0, val_w - 2 * pad)
+        x0 = self.pdf.l_margin
+        body = self._t(text or "-")
+
+        text_h = self._text_height(body, text_w, line_h)
+        h = max(min_h, text_h + 2 * pad)
+        self._ensure_space(h)
+        y0 = self.pdf.get_y()
+
+        # 테두리만 먼저 (텍스트는 한 번만 그림 → 겹침/넘침 방지)
+        self.pdf.rect(x0, y0, label_w, h)
+        self.pdf.rect(x0 + label_w, y0, val_w, h)
+
+        self.pdf.set_xy(x0, y0 + max(0.0, (h - line_h) / 2))
+        self.pdf.cell(label_w, line_h, self._t(label), border=0, align="C")
+
+        self.pdf.set_xy(x0 + label_w + pad, y0 + pad)
+        self.pdf.multi_cell(text_w, line_h, body, border=0)
+        self.pdf.set_xy(x0, y0 + h)
 
     def table_header(self, cols: List[Tuple[str, float]]) -> None:
         self.pdf.set_font(self.family, size=9)
@@ -170,10 +230,34 @@ class _EirForm:
         self.pdf.ln()
 
     def table_row(self, cols: List[Tuple[str, float]]) -> None:
+        """긴 Description 도 칸 안에서 줄바꿈."""
         self.pdf.set_font(self.family, size=8)
+        line_h = 4.2
+        pad = 1.0
+        x0 = self.pdf.l_margin
+
+        heights: List[float] = []
+        bodies: List[str] = []
         for text, w in cols:
-            self.pdf.cell(w, 7, self._t(text), border=1)
-        self.pdf.ln()
+            body = self._t(text)
+            bodies.append(body)
+            heights.append(
+                max(
+                    line_h + 2 * pad,
+                    self._text_height(body, max(8.0, w - 2 * pad), line_h) + 2 * pad,
+                )
+            )
+        h = max(heights)
+        self._ensure_space(h)
+        y0 = self.pdf.get_y()
+
+        x = x0
+        for body, (_, w) in zip(bodies, cols):
+            self.pdf.rect(x, y0, w, h)
+            self.pdf.set_xy(x + pad, y0 + pad)
+            self.pdf.multi_cell(max(8.0, w - 2 * pad), line_h, body, border=0)
+            x += w
+        self.pdf.set_xy(x0, y0 + h)
 
     def check_line(self, label: str, checked: bool) -> None:
         mark = "[X]" if checked else "[ ]"
@@ -277,8 +361,6 @@ def build_report_pdf(record: Dict, report: Dict) -> bytes:
             raw = str(d.get("class") or "?").lower()
             sev = str(d.get("severity") or "?").lower()
             desc = str(d.get("description") or d.get("note") or "-")
-            if len(desc) > 42:
-                desc = desc[:40] + "…"
             f.table_row(
                 [
                     (str(i), cols[0][1]),

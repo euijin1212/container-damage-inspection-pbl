@@ -294,7 +294,7 @@ export function InspectionDetail({
               <h3 className="mb-2 text-sm font-semibold text-foreground dark:text-slate-300">촬영 정보</h3>
               <dl className="grid grid-cols-2 gap-px overflow-hidden rounded-lg bg-border dark:bg-white/10">
                 <InfoCell label="촬영 시간" value={formatDateTime(inspection.captured_at)} tone="panel" />
-                <InfoCell label="담당 검수자" value={inspection.assigned_inspector || '미배정'} tone="panel" />
+                <InfoCell label="담당 검수자" value="홍길동" tone="panel" />
               </dl>
             </div>
 
@@ -328,12 +328,12 @@ export function InspectionDetail({
                         )}
                     </div>
                   </div>
-                  {report_status === 'PENDING' && (
+                  {report_status === 'PENDING' && !isGateInflow(inspection) && (
                     <Button size="sm" onClick={() => onGenerateReport(inspection.event_id)}>
                       <FileText className="size-4" /> 보고서 생성
                     </Button>
                   )}
-                  {report_status === 'FAILED' && (
+                  {report_status === 'FAILED' && !isGateInflow(inspection) && (
                     <Button size="sm" variant="secondary" onClick={() => onGenerateReport(inspection.event_id)}>
                       <RotateCw className="size-4" /> 재생성
                     </Button>
@@ -434,13 +434,16 @@ export function InspectionDetail({
               {inspection.event_id} · {inspection.container_id}
             </DialogDescription>
           </DialogHeader>
-          <p className="text-sm text-muted-foreground">
+          <p className="whitespace-pre-line text-sm text-muted-foreground">
             {confirm === 'approve' &&
-              '이 컨테이너 검수 건을 승인하시겠습니까? 승인 시 보고서가 자동 생성되며, 다음 검수 항목으로 이동합니다.'}
+              `이 컨테이너 검수 건을 승인하시겠습니까?
+승인 시 보고서가 자동 생성되며, 다음 검수 항목으로 이동합니다.`}
             {confirm === 'reject' &&
-              '이 컨테이너 검수 건을 반려하시겠습니까? 관련 이미지·보고서(S3)와 검수 기록(DynamoDB)이 삭제됩니다.'}
+              `이 컨테이너 검수 건을 반려하시겠습니까?
+관련 이미지·보고서와 검수 기록이 삭제됩니다.`}
             {confirm === 'reinspect' &&
-              'Foundation Model이 이미지 화질을 개선한 뒤, 검수 의견을 반영해 손상을 다시 감지합니다. 최대 약 60초 걸릴 수 있습니다.'}
+              `Foundation Model이 이미지 화질을 개선한 뒤, 검수 의견을 반영해 손상을 다시 감지합니다.
+최대 약 60초 걸릴 수 있습니다.`}
           </p>
           {confirm === 'reinspect' && (
             <Textarea

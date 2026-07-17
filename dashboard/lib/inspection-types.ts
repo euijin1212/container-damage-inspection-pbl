@@ -27,6 +27,7 @@ export interface Detection {
   confidence?: number // 0-1
   severity: RiskLevel
   description: string
+  location?: string
   box: BoundingBox
 }
 

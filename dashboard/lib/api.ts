@@ -110,6 +110,7 @@ function normalizeDetection(raw: Record<string, unknown>, idx: number): Detectio
     confidence,
     severity: asRiskLevel(raw.severity),
     description: String(raw.description || ''),
+    location: typeof raw.location === 'string' ? raw.location : undefined,
     box,
   }
 }
@@ -242,36 +243,38 @@ export function toInspection(raw: Record<string, unknown>): Inspection {
           ? raw.reviewerComment
           : undefined,
     ai_summary: (() => {
+      const typeKo: Record<string, string> = {
+        hole: '구멍',
+        dent: '찌그러짐',
+        rust: '녹/부식',
+      }
+      const sevKo: Record<string, string> = {
+        HIGH: '심각',
+        MEDIUM: '보통',
+        LOW: '경미',
+      }
+      // 초기/재검수 동일: detections 기반 통일 포맷
+      if (detections.length > 0) {
+        const lines = detections.map((d, i) => {
+          const desc = (d.description || '').trim().replace(/\s+/g, ' ')
+          const label = typeKo[d.label.toLowerCase()] || d.label
+          const sev = sevKo[d.severity] || d.severity
+          const loc = (d.location || '위치 미상').trim()
+          if (desc) return `${i + 1}) ${loc} — ${label}(${sev}): ${desc}`
+          return `${i + 1}) ${loc} — ${label}(${sev}) 확인`
+        })
+        return [
+          `총 ${detections.length}건의 손상이 탐지되었습니다.`,
+          ...lines,
+          '유형·위치·정도를 종합하면 수동 검수로 최종 확인하는 것이 적절합니다.',
+        ].join('\n')
+      }
       const fromApi = String(raw.ai_summary || raw.aiSummary || '').trim()
-      // 유형명만 나열된 값("rust, dent")은 detection 설명으로 대체
-      const labelOnly =
-        fromApi.length > 0 &&
-        fromApi.length < 40 &&
-        /^[\s,|/]*(hole|dent|rust|구멍|찌그러짐|녹\/?부식|녹슴)([\s,|/]+(hole|dent|rust|구멍|찌그러짐|녹\/?부식|녹슴))*[\s,|/]*$/i.test(
-          fromApi,
-        )
       const withBreaks = (text: string) =>
         text
           .replace(/\s+(\d+\))\s*/g, '\n$1 ')
           .replace(/\s+(유형·위치·정도를 종합하면)/g, '\n$1')
           .trim()
-      if (fromApi && !labelOnly) return withBreaks(fromApi)
-      const fromDetections = detections
-        .map((d, i) => {
-          const desc = (d.description || '').trim()
-          const label = (d.label || '손상').trim()
-          const sev = d.severity || ''
-          if (desc) return `${i + 1}) ${label}${sev ? `(${sev})` : ''}: ${desc}`
-          return ''
-        })
-        .filter(Boolean)
-      if (fromDetections.length > 0) {
-        return [
-          `총 ${detections.length}건의 손상이 탐지되었습니다.`,
-          ...fromDetections,
-          '유형·위치·정도를 종합하면 수동 검수로 최종 확인하는 것이 적절합니다.',
-        ].join('\n')
-      }
       return withBreaks(fromApi || damageSummary || '')
     })(),
     verdict: String(raw.verdict || ''),

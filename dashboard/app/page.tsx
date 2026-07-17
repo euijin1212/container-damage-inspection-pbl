@@ -337,9 +337,9 @@ export default function Page() {
       <main className="mx-auto max-w-[1600px] space-y-8 px-6 py-10 lg:px-8">
         <div className="space-y-3">
           <h2 className="text-3xl font-bold tracking-tight text-balance">컨테이너 검수 현황</h2>
-          <p className="max-w-2xl text-base text-muted-foreground">
-            AI가 선별한 컨테이너 검수 건을 확인하고 필요한 조치를 진행하세요.
-            새 분석 결과는 약 {POLLING_INTERVAL_MS / 1000}초마다 자동 반영됩니다.
+          <p className="max-w-2xl whitespace-pre-line text-base text-muted-foreground">
+            {`AI가 선별한 컨테이너 검수 건을 확인하고 필요한 조치를 진행하세요.
+새 분석 결과는 약 ${POLLING_INTERVAL_MS / 1000}초마다 자동 반영됩니다.`}
           </p>
           {loading && (
             <p className="text-sm text-muted-foreground">API에서 검수 목록을 불러오는 중…</p>

@@ -75,14 +75,14 @@ _PROMPT = """당신은 항만 컨테이너 외관 검수 전문가입니다.
 
 출력 JSON 스키마:
 {
-  "overall_judgment": "전체 판단 근거. 첫 줄에 총 건수 요약, 이어서 손상마다 한 줄씩(번호) 유형·위치·심각도·관찰, 마지막 줄에 종합 결론. 줄바꿈(\\n)으로 구분. 유형명만 나열하지 말 것.",
+  "overall_judgment": "사용하지 않음(서버가 damages 로 통일 포맷 생성). 빈 문자열 가능.",
   "damages": [
     {
       "type": "hole|dent|rust",
       "severity": "low|medium|high",
       "confidence": 0.0~1.0,
       "location": "상/중/하-좌/중/우 형식 (예: 하-우)",
-      "note": "해당 구역 판정 근거 (한국어 1~2문장, 구체적 관찰)",
+      "note": "한 줄 요약 (한국어 20자 내외, 핵심만. 예: '측면 중앙 수직 골판 함몰')",
       "bbox_pct": {"x": 0, "y": 0, "width": 10, "height": 10}
     }
   ]
@@ -90,6 +90,7 @@ _PROMPT = """당신은 항만 컨테이너 외관 검수 전문가입니다.
 
 이미지에 표시된 기존 bounding box 구역만 분석하세요.
 새 구역을 만들지 말고, 표시된 박스 안의 손상 유형/정도만 판정하세요.
+각 damages[].note 는 반드시 한 줄·짧은 요약만 쓰세요. 긴 문장·나열 금지.
 손상이 없으면 damages 는 [] 로 두고, overall_judgment 에 이상 없음 근거를 적으세요.
 JSON 외 설명 문장은 넣지 마세요.
 """
@@ -110,14 +111,14 @@ _REINSPECT_PROMPT = """당신은 항만 컨테이너 외관 검수 전문가입�
 
 출력 JSON 스키마만 반환하세요:
 {
-  "overall_judgment": "전체 판단 근거. 첫 줄 총 건수, 손상마다 한 줄, 마지막 줄 종합 결론. 줄바꿈(\\n) 사용. 유형명만 나열하지 말 것.",
+  "overall_judgment": "사용하지 않음(서버가 damages 로 통일 포맷 생성). 빈 문자열 가능.",
   "damages": [
     {
       "type": "hole|dent|rust",
       "severity": "low|medium|high",
       "confidence": 0.0~1.0,
       "location": "상/중/하-좌/중/우 형식 (예: 하-우)",
-      "note": "해당 구역 판정 근거 (한국어 1~2문장)",
+      "note": "한 줄 요약 (한국어 20자 내외, 핵심만)",
       "bbox_pct": {"x": 0.0, "y": 0.0, "width": 10.0, "height": 10.0}
     }
   ]
@@ -125,6 +126,7 @@ _REINSPECT_PROMPT = """당신은 항만 컨테이너 외관 검수 전문가입�
 
 bbox_pct 는 이미지 전체 대비 퍼센트(0~100)입니다.
 기존 박스에 묶이지 말고, 의견·화질 개선 결과를 바탕으로 실제 손상을 재감지하세요.
+각 damages[].note 는 반드시 한 줄·짧은 요약만 쓰세요. 긴 문장·나열 금지.
 손상이 없으면 damages 는 [] , overall_judgment 에 근거를 적으세요.
 """
 
@@ -182,13 +184,19 @@ def _parse_damages(payload: dict) -> List[DamageItem]:
             except (TypeError, ValueError):
                 box = None
 
+        note = raw.get("note")
+        if isinstance(note, str):
+            note = " ".join(note.split())  # 개행·공백 정리 → 한 줄
+            if len(note) > 40:
+                note = note[:38].rstrip() + "…"
+
         items.append(
             DamageItem(
                 damage_type=dtype,
                 severity=_normalize_severity(raw.get("severity")),
                 confidence=confidence,
                 location=raw.get("location"),
-                note=raw.get("note"),
+                note=note,
                 box=box,
             )
         )
@@ -199,49 +207,39 @@ _SEV_KO = {"low": "경미", "medium": "보통", "high": "심각"}
 _TYPE_KO = {"hole": "구멍", "dent": "찌그러짐", "rust": "녹/부식"}
 
 
-def _fallback_judgment(damages: List[DamageItem]) -> str:
-    """모델이 overall_judgment 를 안 줄 때 손상 목록으로 종합 근거를 만든다."""
+def format_judgment_basis(damages: List[DamageItem]) -> str:
+    """초기 분석·재검수 공통 AI 판단 근거 포맷."""
     if not damages:
         return (
-            "이미지에서 구멍·찌그러짐·녹 등 유의미한 외관 손상이 확인되지 않았습니다. "
+            "이미지에서 구멍·찌그러짐·녹 등 유의미한 외관 손상이 확인되지 않았습니다.\n"
             "현재 탐지 결과만으로는 구조적 위험이 낮아 보이며, 이상 징후가 없습니다."
         )
     parts = []
     for i, d in enumerate(damages, 1):
         t = _TYPE_KO.get(d.damage_type, d.damage_type)
         s = _SEV_KO.get(d.severity, d.severity)
-        loc = d.location or "위치 미상"
-        note = (d.note or "").strip()
+        loc = (d.location or "위치 미상").strip()
+        note = " ".join((d.note or "").split()).strip()
         if note:
-            parts.append(f"{i}) {loc}에서 {t}({s}) — {note}")
+            parts.append(f"{i}) {loc} — {t}({s}): {note}")
         else:
-            parts.append(f"{i}) {loc}에서 {t}({s})가 확인됨")
-    worst = max(damages, key=lambda x: {"low": 1, "medium": 2, "high": 3}.get(x.severity, 0))
-    worst_t = _TYPE_KO.get(worst.damage_type, worst.damage_type)
+            parts.append(f"{i}) {loc} — {t}({s}) 확인")
     return (
         f"총 {len(damages)}건의 손상이 탐지되었습니다.\n"
         + "\n".join(parts)
-        + f"\n대표 위험은 {worst_t}({_SEV_KO.get(worst.severity, worst.severity)})이며, "
-        "유형·위치·정도를 종합하면 수동 검수로 최종 확인하는 것이 적절합니다."
+        + "\n유형·위치·정도를 종합하면 수동 검수로 최종 확인하는 것이 적절합니다."
     )
 
 
 def _extract_judgment(payload: dict, damages: List[DamageItem]) -> str:
-    raw = (
-        payload.get("overall_judgment")
-        or payload.get("judgment_basis")
-        or payload.get("ai_summary")
-        or ""
-    )
-    text = str(raw).strip()
-    # 유형명만 콤마로 나열한 경우(예: "rust, dent")는 폴백으로 대체
-    if text and "," in text and len(text) < 40:
-        labels = {x.strip().lower() for x in text.split(",") if x.strip()}
-        if labels and labels <= {"hole", "dent", "rust", "구멍", "찌그러짐", "녹", "녹/부식"}:
-            text = ""
-    if not text:
-        return _fallback_judgment(damages)
-    return text[:1200]
+    """모델 자유 서술 대신 손상 목록으로 통일 포맷을 만든다."""
+    # overall_judgment 는 참고만 하고, 화면 포맷은 항상 damages 기준으로 맞춤
+    _ = payload
+    return format_judgment_basis(damages)[:1200]
+
+
+# 하위 호환
+_fallback_judgment = format_judgment_basis
 
 
 class BedrockDamageAnalyzer:

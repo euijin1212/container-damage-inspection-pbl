@@ -344,34 +344,33 @@ def _build_ai_summary(
     detections: List[Dict],
     detected_damage: str,
 ) -> str:
-    """AI 판단 근거 텍스트. judgment_basis 우선, 없으면 detection 설명으로 합성."""
-    stored = str(
-        cloud.get("judgment_basis")
-        or cloud.get("overall_judgment")
-        or cloud.get("ai_summary")
-        or ""
-    ).strip()
-    if stored and not _is_label_only_summary(stored):
-        return _format_judgment_lines(stored)[:1200]
-
+    """AI 판단 근거. 초기/재검수 동일: detections 기반 통일 포맷."""
     if not detections:
         if cloud.get("inspection_result") == "normal":
             return (
                 "이미지에서 구멍·찌그러짐·녹 등 유의미한 외관 손상이 확인되지 않았습니다.\n"
                 "현재 탐지 결과만으로는 구조적 위험이 낮아 보입니다."
             )
-        return _format_judgment_lines(stored or detected_damage) or (
+        stored = str(
+            cloud.get("judgment_basis")
+            or cloud.get("overall_judgment")
+            or cloud.get("ai_summary")
+            or detected_damage
+            or ""
+        ).strip()
+        return _format_judgment_lines(stored) or (
             "AI 판독 요약이 아직 생성되지 않았습니다."
         )
 
+    # 저장된 자유 서술(재검수 모델 문장 등)은 쓰지 않고, 항상 동일 포맷으로 재구성
     parts = []
     for i, d in enumerate(detections, 1):
         label = str(d.get("label") or d.get("damage_class") or "손상").strip()
         t = _TYPE_KO_UI.get(label.lower(), label)
         sev_raw = str(d.get("severity") or "").strip()
-        sev = _SEV_KO_UI.get(sev_raw, sev_raw or "미상")
+        sev = _SEV_KO_UI.get(sev_raw, _SEV_KO_UI.get(sev_raw.lower(), sev_raw or "미상"))
         loc = str(d.get("location") or "위치 미상").strip()
-        desc = str(d.get("description") or d.get("note") or "").strip()
+        desc = " ".join(str(d.get("description") or d.get("note") or "").split()).strip()
         if desc:
             parts.append(f"{i}) {loc} — {t}({sev}): {desc}")
         else:
