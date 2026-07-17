@@ -290,6 +290,26 @@ def _condition(detections: List[Dict]) -> str:
     return "DAMAGE" if detections else "NO DAMAGE"
 
 
+# 대시보드 담당 검수자와 동일 기본값. 시스템 식별자는 사람 이름으로 쓰지 않음.
+_DEFAULT_INSPECTOR = "홍길동"
+_SYSTEM_INSPECTORS = {
+    "",
+    "-",
+    "dashboard",
+    "ai cloud inspection",
+    "담당자 미지정",
+}
+
+
+def _inspector_name(record: Dict) -> str:
+    """ACKNOWLEDGEMENT Inspected By — 담당 검수자명."""
+    for key in ("assigned_inspector", "inspector", "reviewer"):
+        raw = str(record.get(key) or "").strip()
+        if raw and raw.lower() not in _SYSTEM_INSPECTORS:
+            return raw
+    return _DEFAULT_INSPECTOR
+
+
 def build_report_pdf(record: Dict, report: Dict) -> bytes:
     """검수 레코드 + 초안을 EIR 전표 양식으로 렌더링한다."""
     record = normalize_inspection_record(record)
@@ -386,7 +406,8 @@ def build_report_pdf(record: Dict, report: Dict) -> bytes:
 
     # --- Sign-off ---
     f.section("6. ACKNOWLEDGEMENT")
-    f.row2(("Inspected By", "AI Cloud Inspection"), ("Date", str(record.get("processed_at") or "-")))
+    inspector = _inspector_name(record)
+    f.row2(("Inspected By", inspector), ("Date", str(record.get("processed_at") or "-")))
     f.row2(("Received By", "____________________"), ("Signature", "____________________"))
 
     return f.output()
