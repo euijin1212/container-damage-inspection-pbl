@@ -338,7 +338,7 @@ export default function Page() {
           )}
           {!loading && !error && inspections.length === 0 && (
             <p className="text-sm text-muted-foreground">
-              표시할 검수 건이 없습니다. DynamoDB item 생성 후 S3에 이미지를 올리면 자동으로 나타납니다.
+              표시할 검수 건이 없습니다.
             </p>
           )}
         </div>

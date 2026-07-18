@@ -33,9 +33,9 @@ class EdgeConfig:
 
     # ===== 1단계(손상 여부) 모델 =====
     model_path: str = os.getenv(
-        "EDGE_MODEL_PATH", os.path.join(_HERE, "weights", "stage1_best.pt")
+        "EDGE_MODEL_PATH", os.path.join(_HERE, "weights", "best.pt")
     )
-    edge_model_name: str = os.getenv("EDGE_MODEL_NAME", "yolov8s-stage1")
+    edge_model_name: str = os.getenv("EDGE_MODEL_NAME", "best.pt")
     edge_conf: float = float(os.getenv("EDGE_CONF", "0.15"))  # 낮을수록 민감(놓침↓)
     edge_imgsz: int = int(os.getenv("EDGE_IMGSZ", "896"))
     edge_iou: float = float(os.getenv("EDGE_IOU", "0.45"))    # NMS IoU(낮을수록 겹침 억제↑)

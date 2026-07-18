@@ -460,23 +460,37 @@ def _process_target(
     edge_detections = list(edge.get("edge_detections") or [])
 
     # --- 다운로드 먼저 (실패 시 RUNNING 으로 안 남김) ---
-    try:
-        image = _store.download_from(bucket, key)
-        print(
-            f"[다운로드] event_id={event_id} bytes={len(image.body)} fmt={image.image_format}"
-        )
-    except Exception as exc:  # noqa: BLE001
-        print(f"[다운로드실패] event_id={event_id}: {exc}")
+    # ingest POST 직후·S3 PUT 전 race / 일시 AccessDenied 대비 짧은 재시도
+    image = None
+    last_exc: Optional[BaseException] = None
+    for attempt in range(1, 6):
+        try:
+            key = _resolve_existing_image_key(bucket, key)
+            image = _store.download_from(bucket, key)
+            print(
+                f"[다운로드] event_id={event_id} bytes={len(image.body)} "
+                f"fmt={image.image_format} attempt={attempt}"
+            )
+            break
+        except Exception as exc:  # noqa: BLE001
+            last_exc = exc
+            print(f"[다운로드대기] event_id={event_id} attempt={attempt}/5: {exc}")
+            if attempt < 5:
+                time.sleep(2 * attempt)
+    if image is None:
+        print(f"[다운로드실패] event_id={event_id}: {last_exc}")
         traceback.print_exc()
         try:
             _update_dynamo(
                 event_id,
-                _build_failure_update(f"s3 download failed: {exc}", bucket, key),
+                _build_failure_update(
+                    f"s3 download failed: {last_exc}", bucket, key
+                ),
                 require_pending=False,
             )
         except Exception as upd_exc:  # noqa: BLE001
             print(f"[실패저장도 실패] event_id={event_id}: {upd_exc}")
-        raise
+        raise last_exc if last_exc else RuntimeError("s3 download failed")
 
     if not force:
         _mark_running(event_id)

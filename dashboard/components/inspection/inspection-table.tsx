@@ -47,6 +47,7 @@ import { uniqueDamageFromInspection } from '@/lib/damage'
 
 // 드롭다운에 노출할 필터 (요약 카드 3종 + 세부 상태)
 const STATUS_OPTIONS: StatusFilter[] = [
+  'ALL',
   'GATE_INFLOW',
   'DONE',
   'REPORT_CREATED',

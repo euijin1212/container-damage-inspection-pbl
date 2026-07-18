@@ -17,7 +17,13 @@ from typing import Dict, List, Optional
 import boto3
 
 from .config import DAMAGE_DENT, DAMAGE_HOLE, DAMAGE_RUST, settings
-from .risk_score import DamageItem
+from .risk_score import (
+    DamageItem,
+    max_extent,
+    _normalize_extent,
+    _SMALL_NOTE_KEYS,
+    _STRUCTURAL_NOTE_KEYS,
+)
 
 
 @dataclass
@@ -68,10 +74,23 @@ _PROMPT = """당신은 항만 컨테이너 외관 검수 전문가입니다.
 - "dent": 찌그러짐/변형/찍힘
 - "rust": 녹슴/부식
 
-손상 정도(severity)는 다음 중 하나입니다:
-- "low": 경미 (표면적, 기능 영향 거의 없음)
+손상 정도(severity)는 박스 안 손상의 위험도입니다:
+- "low": 경미 (기능 영향 거의 없음)
 - "medium": 중간 (눈에 띄는 손상)
-- "high": 심각 (구조적/관통성 손상, 즉시 조치 필요)
+- "high": 심각 (구조적/관통성, 즉시 조치 필요)
+
+손상 크기(extent)는 박스 안에서 실제로 보이는 손상 범위·깊이입니다(박스 크기와 무관):
+- "small": 국소·얕음·점상
+- "medium": 중간 범위
+- "large": 넓거나 깊은 손상, 패널 상당 부분·프레임/면 전체 구김
+
+dent / hole 판정(중요):
+- 관통이 없는 찍힘·함몰·딤플은 반드시 "dent" (hole 금지)
+- hole 은 실제로 뚫린 구멍/관통만
+- 박스 안 손상이 국소·작으면: severity "low" 또는 "medium", extent 반드시 "small"
+- 산발적으로 여러 개 작은 dent 가 있어도 각각 extent "small" (large 로 올리지 말 것)
+- 프레임·면 전체가 구겨지거나 뒤틀린 대형 찌그러짐만: severity "high" + extent "large"
+- bbox 가 커도 안쪽 실제 함몰이 작으면 extent 는 "small"
 
 출력 JSON 스키마:
 {
@@ -80,6 +99,7 @@ _PROMPT = """당신은 항만 컨테이너 외관 검수 전문가입니다.
     {
       "type": "hole|dent|rust",
       "severity": "low|medium|high",
+      "extent": "small|medium|large",
       "confidence": 0.0~1.0,
       "location": "상/중/하-좌/중/우 형식 (예: 하-우)",
       "note": "감지 결과 한 줄 요약. '위치/부위 + 손상 특징' 형식. 예: '녹색 컨테이너 하단부 광범위한 녹슬음과 부식, 페인트 박리'",
@@ -89,12 +109,13 @@ _PROMPT = """당신은 항만 컨테이너 외관 검수 전문가입니다.
 }
 
 이미지에 표시된 기존 bounding box 구역만 분석하세요.
-새 구역을 만들지 말고, 표시된 박스 안의 손상 유형/정도만 판정하세요.
+새 구역을 만들지 말고, 박스 안 손상의 유형·심각도·크기(extent)만 판정하세요.
+bbox 픽셀 크기와 extent 를 혼동하지 마세요.
 
 병합 규칙(중요):
 - 네모(박스) 안·근처에서 유형(type)이 같고 위치가 가까우면 하나의 damages 로만 기록
 - 인접한 녹 패치·연속 함몰·근접 구멍은 쪼개지 말고 대표 1건으로 묶기
-- 묶을 때 severity 는 가장 높은 값, bbox_pct 는 합친 영역, note 는 대표 한 줄 요약
+- 묶을 때 severity/extent 는 가장 높은 값, bbox_pct 는 합친 영역, note 는 대표 한 줄 요약
 
 각 damages[].note 규칙:
 - 한국어 한 줄, 마침표 없이 명사구·짧은 구로 끝냄
@@ -117,7 +138,7 @@ _REINSPECT_PROMPT = """당신은 항만 컨테이너 외관 검수 전문가입�
 병합 규칙(초기 검수와 동일):
 - 네모 안·근처에서 유형(type)이 같고 위치가 가까우면 하나의 damages 로만 기록
 - 인접한 녹 패치·연속 함몰·근접 구멍은 쪼개지 말고 대표 1건으로 묶기
-- 묶을 때 severity 는 가장 높은 값, bbox_pct 는 합친 영역(또는 대표 박스), note 는 대표 한 줄
+- 묶을 때 severity/extent 는 가장 높은 값, bbox_pct 는 합친 영역(또는 대표 박스), note 는 대표 한 줄
 - box_index 는 묶음에 포함된 대표(가장 심각한) 박스 번호를 쓰세요
 
 손상 유형은 반드시 다음 중 하나로 분류합니다:
@@ -125,10 +146,20 @@ _REINSPECT_PROMPT = """당신은 항만 컨테이너 외관 검수 전문가입�
 - "dent": 찌그러짐/변형/찍힘
 - "rust": 녹슴/부식
 
-손상 정도(severity)는 다음 중 하나입니다:
+손상 정도(severity)는 박스 안 손상의 위험도입니다:
 - "low": 경미
 - "medium": 중간
 - "high": 심각
+
+손상 크기(extent)는 박스 안에서 실제로 보이는 손상 범위·깊이입니다(박스 픽셀 크기와 무관):
+- "small": 국소·얕음·점상
+- "medium": 중간 범위
+- "large": 넓거나 깊은 손상·프레임/면 전체 구김
+
+dent / hole:
+- 관통 없는 찍힘·함몰은 "dent". hole 은 실제 관통만
+- 국소·작은 dent → severity low/medium, extent "small" (여러 개여도 large 금지)
+- 프레임·면 전체 구김·뒤틀림만 → severity "high" + extent "large"
 
 출력 JSON 스키마만 반환하세요:
 {
@@ -137,6 +168,7 @@ _REINSPECT_PROMPT = """당신은 항만 컨테이너 외관 검수 전문가입�
     {
       "type": "hole|dent|rust",
       "severity": "low|medium|high",
+      "extent": "small|medium|large",
       "confidence": 0.0~1.0,
       "location": "상/중/하-좌/중/우 형식 (예: 하-우)",
       "note": "감지 결과 한 줄 요약. '위치/부위 + 손상 특징' 형식. 예: '녹색 컨테이너 하단부 광범위한 녹슬음과 부식, 페인트 박리'",
@@ -218,20 +250,63 @@ def _parse_damages(payload: dict) -> List[DamageItem]:
             if len(note) > 60:
                 note = note[:58].rstrip() + "…"
 
+        severity = _normalize_severity(raw.get("severity"))
+        extent = _normalize_extent(raw.get("extent"), severity)
         items.append(
-            DamageItem(
-                damage_type=dtype,
-                severity=_normalize_severity(raw.get("severity")),
-                confidence=confidence,
-                location=raw.get("location"),
-                note=note,
-                box=box,
+            _adjust_dent_scale(
+                DamageItem(
+                    damage_type=dtype,
+                    severity=severity,
+                    confidence=confidence,
+                    location=raw.get("location"),
+                    note=note,
+                    box=box,
+                    extent=extent,
+                )
             )
         )
     return items
 
 
+def _adjust_dent_scale(item: DamageItem) -> DamageItem:
+    """약간의 dent(40~60) vs 심한 dent(70~80) 구간이 맞게 severity/extent 보정."""
+    if item.damage_type != DAMAGE_DENT:
+        return item
+    note = (item.note or "").lower()
+    ext = _normalize_extent(item.extent, item.severity)
+
+    # 국소·찍힘·산발 → 약간의 dent
+    if any(k in note for k in _SMALL_NOTE_KEYS) or ext == "small":
+        new_sev = "low" if _SEV_RANK.get(item.severity, 0) <= 1 else "medium"
+        new_ext = "small" if ext != "medium" else "medium"
+        if ext == "large":
+            new_ext = "small"
+        return DamageItem(
+            damage_type=item.damage_type,
+            severity=new_sev,
+            confidence=item.confidence,
+            location=item.location,
+            note=item.note,
+            box=item.box,
+            extent=new_ext,
+        )
+
+    # 프레임·광범위 구김 → 심한 dent
+    if any(k in note for k in _STRUCTURAL_NOTE_KEYS):
+        return DamageItem(
+            damage_type=item.damage_type,
+            severity="high",
+            confidence=item.confidence,
+            location=item.location,
+            note=item.note,
+            box=item.box,
+            extent="large",
+        )
+    return item
+
+
 _SEV_KO = {"low": "경미", "medium": "보통", "high": "심각"}
+_EXT_KO = {"small": "소형", "medium": "중형", "large": "대형"}
 _TYPE_KO = {"hole": "구멍", "dent": "찌그러짐", "rust": "녹/부식"}
 _SEV_RANK = {"low": 1, "medium": 2, "high": 3}
 _V_MAP = {"상": 0, "중": 1, "하": 2, "top": 0, "mid": 1, "bottom": 2}
@@ -335,7 +410,7 @@ def _damages_nearby(
 
 
 def _merge_two(a: DamageItem, b: DamageItem) -> DamageItem:
-    """두 손상을 1건으로. severity·confidence 최대, bbox 합집합, note 대표 1줄."""
+    """두 손상을 1건으로. severity·extent·confidence 최대, bbox 합집합, note 대표 1줄."""
     if _SEV_RANK.get(b.severity, 0) > _SEV_RANK.get(a.severity, 0):
         primary, secondary = b, a
     else:
@@ -347,13 +422,15 @@ def _merge_two(a: DamageItem, b: DamageItem) -> DamageItem:
         note = note_a if len(note_a) >= len(note_b) else note_b
     else:
         note = note_a or note_b
+    sev = primary.severity
     return DamageItem(
         damage_type=primary.damage_type,
-        severity=primary.severity,
+        severity=sev,
         confidence=max(a.confidence, b.confidence),
         location=primary.location or secondary.location,
         note=note,
         box=_union_box(a.box, b.box),
+        extent=max_extent(a.extent, b.extent, sev),
     )
 
 
@@ -421,18 +498,24 @@ def constrain_damages_to_prior_boxes(
         except (TypeError, ValueError):
             confidence = 1.0
         note = _normalize_note(raw.get("note") if isinstance(raw.get("note"), str) else None)
-        cand = DamageItem(
-            damage_type=dtype,
-            severity=_normalize_severity(raw.get("severity")),
-            confidence=confidence,
-            location=raw.get("location"),
-            note=note,
-            box=dict(prior_boxes[idx]),
+        severity = _normalize_severity(raw.get("severity"))
+        cand = _adjust_dent_scale(
+            DamageItem(
+                damage_type=dtype,
+                severity=severity,
+                confidence=confidence,
+                location=raw.get("location"),
+                note=note,
+                box=dict(prior_boxes[idx]),
+                extent=_normalize_extent(raw.get("extent"), severity),
+            )
         )
         prev = assigned.get(idx)
-        if prev is None or _SEV_RANK.get(cand.severity, 0) > _SEV_RANK.get(
-            prev.severity, 0
-        ):
+        if prev is None:
+            assigned[idx] = cand
+        elif cand.damage_type == prev.damage_type:
+            assigned[idx] = _merge_two(prev, cand)
+        elif _SEV_RANK.get(cand.severity, 0) > _SEV_RANK.get(prev.severity, 0):
             assigned[idx] = cand
 
     if assigned:
@@ -444,13 +527,16 @@ def constrain_damages_to_prior_boxes(
         if i >= len(prior_boxes):
             break
         out.append(
-            DamageItem(
-                damage_type=d.damage_type,
-                severity=d.severity,
-                confidence=d.confidence,
-                location=d.location,
-                note=_normalize_note(d.note),
-                box=dict(prior_boxes[i]),
+            _adjust_dent_scale(
+                DamageItem(
+                    damage_type=d.damage_type,
+                    severity=d.severity,
+                    confidence=d.confidence,
+                    location=d.location,
+                    note=_normalize_note(d.note),
+                    box=dict(prior_boxes[i]),
+                    extent=_normalize_extent(d.extent, d.severity),
+                )
             )
         )
     return out
@@ -524,16 +610,17 @@ def format_judgment_basis(damages: List[DamageItem]) -> str:
     for i, d in enumerate(damages, 1):
         t = _TYPE_KO.get(d.damage_type, d.damage_type)
         s = _SEV_KO.get(d.severity, d.severity)
+        e = _EXT_KO.get(_normalize_extent(d.extent, d.severity), d.extent)
         loc = (d.location or "위치 미상").strip()
         note = " ".join((d.note or "").split()).strip()
         if note:
-            parts.append(f"{i}) {loc} — {t}({s}): {note}")
+            parts.append(f"{i}) {loc} — {t}({s}/{e}): {note}")
         else:
-            parts.append(f"{i}) {loc} — {t}({s}) 확인")
+            parts.append(f"{i}) {loc} — {t}({s}/{e}) 확인")
     return (
         f"총 {len(damages)}건의 손상이 탐지되었습니다.\n"
         + "\n".join(parts)
-        + "\n유형·위치·정도를 종합하면 수동 검수로 최종 확인하는 것이 적절합니다."
+        + "\n유형·크기·정도를 종합하면 수동 검수로 최종 확인하는 것이 적절합니다."
     )
 
 

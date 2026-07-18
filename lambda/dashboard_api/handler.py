@@ -517,6 +517,12 @@ def _serialize_item(item: Dict, *, detail: bool = False) -> Dict:
         "reportStatus": _REPORT_TO_FRONT.get(report_status, report_status or "PENDING"),
         "report_status": report_status or REPORT_NOT_CREATED,
     }
+    # 목록에서도 실패 사유를 보여 재시도 UI 가 동작하도록
+    if review == "INFERENCE_FAILED":
+        err = cloud.get("error_message")
+        if err:
+            out["errorMessage"] = err
+            out["error_message"] = err
 
     # 목록/상세 공통: 생성된 PDF Presigned URL
     report_path = report.get("report_path")
@@ -589,11 +595,19 @@ def _serialize_item(item: Dict, *, detail: bool = False) -> Dict:
     return out
 
 
-def _kick_analyzer_if_pending(event_id: str, cloud: Optional[Dict] = None) -> None:
+def _kick_analyzer_if_pending(
+    event_id: str,
+    cloud: Optional[Dict] = None,
+    *,
+    image: Optional[Dict] = None,
+) -> None:
     """S3 트리거가 놓친 PENDING/멈춘 RUNNING 건을 analyzer Event 로 재호출.
 
     dashboard 는 RUNNING 을 미리 찍지 않는다.
     (미리 RUNNING 만 찍고 analyzer 가 실패/미실행이면 고착됨)
+
+    이미지가 아직 S3 에 없으면 kick 하지 않는다.
+    (ingest POST 직후·PUT 전 race 로 조기 실패하는 것 방지)
     """
     cloud = cloud or {}
     analysis_status = cloud.get("analysis_status")
@@ -628,6 +642,18 @@ def _kick_analyzer_if_pending(event_id: str, cloud: Optional[Dict] = None) -> No
             )
         except ClientError as exc:
             print(f"[kick] PENDING 복구 실패 event_id={event_id}: {exc}")
+            return
+
+    image = image or {}
+    bucket = str(image.get("bucket") or _bucket())
+    raw_key = image.get("raw_image_key")
+    if raw_key:
+        resolved = _resolve_image_key(bucket, str(raw_key))
+        if not resolved:
+            print(
+                f"[kick] skip — S3 이미지 없음 event_id={event_id} "
+                f"s3://{bucket}/{raw_key}"
+            )
             return
 
     fn = os.getenv("ANALYZER_FUNCTION_NAME", _DEFAULT_ANALYZER)
@@ -691,6 +717,7 @@ def list_inspections(query: Dict[str, str]) -> Dict:
             items.extend(resp.get("Items") or [])
 
     # S3 트리거 누락 대비: PENDING 은 analyzer 만 비동기 kick (UX 는 분석 중 유지)
+    # 단, S3 이미지가 올라온 뒤에만 kick (POST→PUT race 방지)
     if status == "PENDING_CLOUD_ANALYSIS":
         for it in items[:10]:
             native = _to_native(it)
@@ -698,7 +725,8 @@ def list_inspections(query: Dict[str, str]) -> Dict:
             if not eid:
                 continue
             cloud = native.get("cloud_analysis") or {}
-            _kick_analyzer_if_pending(eid, cloud)
+            image = native.get("image") or {}
+            _kick_analyzer_if_pending(eid, cloud, image=image)
 
     serialized = [_serialize_item(it, detail=False) for it in items]
     # 촬영 시간 오름차순 — 먼저 들어온 건이 위 (화면 공통)

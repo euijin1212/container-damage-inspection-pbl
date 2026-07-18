@@ -40,10 +40,10 @@ DAMAGE_HOLE = "hole"  # 구멍
 DAMAGE_DENT = "dent"  # 찌그러짐
 DAMAGE_RUST = "rust"  # 녹슴
 
-# 손상 정도 → 계수 (0~1)
+# 손상 정도 → 계수 (0~1) — risk_score 와 동일 스케일
 SEVERITY_FACTORS: Dict[str, float] = {
-    "low": 0.3,      # 경미
-    "medium": 0.6,   # 중간
+    "low": 0.35,     # 경미
+    "medium": 0.65,  # 중간
     "high": 1.0,     # 심각
 }
 
@@ -95,12 +95,14 @@ class Settings:
     knowledge_base_id: str = os.getenv("KNOWLEDGE_BASE_ID", "")
     kb_max_results: int = int(_get_float("KB_MAX_RESULTS", 4))
 
-    # Risk Score - 손상 유형별 가중치 (구멍 >= 찌그러짐 > 녹슴)
+    # Risk Score - 유형 가중치: hole > dent > rust
+    # 참고용(실제 점수는 risk_score 가이드라인 표 사용)
+    # rust 10~20/30~40, dent 40~60/70~80, hole≥90
     type_weights: Dict[str, float] = field(
         default_factory=lambda: {
             DAMAGE_HOLE: _get_float("RISK_WEIGHT_HOLE", 1.0),
-            DAMAGE_DENT: _get_float("RISK_WEIGHT_DENT", 0.85),
-            DAMAGE_RUST: _get_float("RISK_WEIGHT_RUST", 0.35),
+            DAMAGE_DENT: _get_float("RISK_WEIGHT_DENT", 0.70),
+            DAMAGE_RUST: _get_float("RISK_WEIGHT_RUST", 0.30),
         }
     )
 

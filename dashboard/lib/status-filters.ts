@@ -7,11 +7,12 @@ export function getReportStatus(inspection: Inspection) {
   return inspection.report?.report_status ?? inspection.report_status
 }
 
-/** 게이트 유입: 분석 중 + 승인(수동 검수) 대기 */
+/** 게이트 유입: 분석 중 + 수동 검수 대기 + 처리 실패(재시도 가능) */
 export function isGateInflow(inspection: Inspection) {
   return (
     inspection.review_status === 'PENDING_CLOUD_ANALYSIS' ||
-    inspection.review_status === 'MANUAL_NEEDED'
+    inspection.review_status === 'MANUAL_NEEDED' ||
+    inspection.review_status === 'INFERENCE_FAILED'
   )
 }
 

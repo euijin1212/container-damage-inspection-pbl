@@ -22,19 +22,26 @@ import glob
 import json
 import os
 import random
+import re
 import sys
 from datetime import datetime, timezone
+from typing import Optional, Tuple
 
 # 어디서 실행하든 같은 폴더 모듈을 찾도록
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from config import config
-from infer import Stage1Detector, EDGE_DAMAGE_SUSPECTED
+from infer import Stage1Detector, EDGE_DAMAGE_SUSPECTED, Detection, EdgeResult
 from ingest_client import post_event
 from upload_to_s3 import render_bbox, put_image
 
 # 컨테이너 번호(ISO 6346 흉내) 시뮬레이션용 소유자 코드
 _OWNERS = ["MSCU", "MSKU", "TEMU", "TGHU", "CAIU", "HLCU", "OOLU"]
+# 파일명에서 event_id / 촬영시각 추출: EVT-YYYYMMDD-HHMMSS-XXXX
+_EVT_RE = re.compile(
+    r"^(EVT-(\d{8})-(\d{6})-(\d{4}))(?:\.[^.]+)?$",
+    re.IGNORECASE,
+)
 
 
 def _now_utc() -> datetime:
@@ -45,13 +52,36 @@ def _gen_container_id() -> str:
     return random.choice(_OWNERS) + f"{random.randint(0, 9_999_999):07d}"
 
 
-def build_payload(event_id: str, captured_at: datetime, result, cfg) -> dict:
+def parse_event_from_filename(name: str) -> Optional[Tuple[str, datetime]]:
+    """input_images 파일명이 EVT-... 형이면 (event_id, captured_at) 반환."""
+    stem = os.path.splitext(os.path.basename(name))[0]
+    m = _EVT_RE.match(stem) or _EVT_RE.match(os.path.basename(name))
+    if not m:
+        return None
+    event_id, ymd, hms, _seq = m.group(1), m.group(2), m.group(3), m.group(4)
+    try:
+        captured_at = datetime.strptime(ymd + hms, "%Y%m%d%H%M%S").replace(
+            tzinfo=timezone.utc
+        )
+    except ValueError:
+        return None
+    return event_id, captured_at
+
+
+def build_payload(
+    event_id: str,
+    captured_at: datetime,
+    result,
+    cfg,
+    *,
+    container_id: Optional[str] = None,
+) -> dict:
     """ingest API 로 보낼 메타데이터(평평한 필드). item 조립은 Lambda 가 한다."""
     return {
         "event_id": event_id,
         "event_date": captured_at.strftime("%Y-%m-%d"),
         "captured_at": captured_at.strftime("%Y-%m-%dT%H:%M:%SZ"),
-        "container_id": _gen_container_id(),
+        "container_id": container_id or _gen_container_id(),
         "gate_id": cfg.gate_id,
         "camera_id": cfg.camera_id,
         "edge_status": result.status,
@@ -91,6 +121,8 @@ def run() -> None:
             p
             for ext in ("*.jpg", "*.jpeg", "*.png", "*.JPG", "*.JPEG", "*.PNG")
             for p in glob.glob(os.path.join(cfg.input_dir, ext))
+            # 백업 폴더·숨김 경로 제외
+            if "_prev_run" not in os.path.normpath(p).split(os.sep)
         }
     )
     print(
@@ -117,25 +149,50 @@ def run() -> None:
                 continue
 
         result = detector.infer(path)
+        named = parse_event_from_filename(name)
 
-        # 정상 → 로컬 로그만 (클라우드 전송 X)
+        # 정상 → 로컬 로그만 (단, EVT- 파일명은 메타에 맞춰 전송)
         if result.status != EDGE_DAMAGE_SUSPECTED:
-            print(f"  {name} → NORMAL (로컬 로그)")
-            _append_log(log_path, {"image": name, "edge_status": result.status})
-            continue
+            if not named:
+                print(f"  {name} → NORMAL (로컬 로그)")
+                _append_log(log_path, {"image": name, "edge_status": result.status})
+                continue
+            # 파일명 기반 이벤트: 탐지 없어도 이미지 중앙 bbox 로 전송
+            import cv2
 
-        # 손상 의심 → 이벤트 생성
+            img0 = cv2.imread(path)
+            h, w = (img0.shape[:2] if img0 is not None else (640, 640))
+            pad_x, pad_y = int(w * 0.15), int(h * 0.15)
+            result = EdgeResult(
+                EDGE_DAMAGE_SUSPECTED,
+                0.5,
+                [
+                    Detection(
+                        damage_class="damage",
+                        confidence=0.5,
+                        bbox={
+                            "x_min": pad_x,
+                            "y_min": pad_y,
+                            "x_max": w - pad_x,
+                            "y_max": h - pad_y,
+                        },
+                    )
+                ],
+            )
+            print(f"  {name} → NORMAL→강제전송 (파일명 event_id 사용)")
+
+        # 손상 의심 → 이벤트 생성 (파일명 EVT-... 우선)
         seq += 1
-        captured_at = _now_utc()
-        event_id = f"EVT-{captured_at.strftime('%Y%m%d-%H%M%S')}-{seq:04d}"
+        if named:
+            event_id, captured_at = named
+        else:
+            captured_at = _now_utc()
+            event_id = f"EVT-{captured_at.strftime('%Y%m%d-%H%M%S')}-{seq:04d}"
         payload = build_payload(event_id, captured_at, result, cfg)
 
-        # bbox 이미지 렌더 + 로컬 사본(payload/이미지)
+        # bbox 렌더 후 S3 업로드만 (로컬 이미지/_prev_run/input 메타 생성 안 함)
         img_bytes = render_bbox(path, result.detections)
         _save_json(cfg.output_dir, event_id, payload)
-        with open(os.path.join(cfg.output_dir, f"{event_id}.jpg"), "wb") as f:
-            f.write(img_bytes)
-
         if cfg.dry_run:
             print(f"  {name} → DAMAGE_SUSPECTED [{event_id}] (dry-run: API 호출 skip)")
             _append_log(log_path, {"image": name, "edge_status": result.status, "event_id": event_id})
