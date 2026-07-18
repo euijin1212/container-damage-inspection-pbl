@@ -340,6 +340,10 @@ export async function listInspections(opts?: {
       }
     }),
   )
+  // 모든 화면 공통: 먼저 들어온 건이 위(촬영 시간 오름차순)
+  items.sort(
+    (a, b) => new Date(a.captured_at).getTime() - new Date(b.captured_at).getTime(),
+  )
   return items
 }
 

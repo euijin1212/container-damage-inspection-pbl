@@ -45,18 +45,6 @@ import { riskScoreColor, StatusBadge } from './status-badges'
 import { formatCaptured } from '@/lib/format'
 import { uniqueDamageFromInspection } from '@/lib/damage'
 
-// Lower number = higher priority (shown first).
-const STATUS_PRIORITY: Record<string, number> = {
-  MANUAL_NEEDED: 0,
-  AUDIT_REQUIRED: 1,
-  PENDING_CLOUD_ANALYSIS: 2,
-  REPORT_PENDING: 3,
-  INFERENCE_FAILED: 4,
-  REPORT_CREATED: 5,
-  DONE: 6,
-  AUTO_OK: 7,
-}
-
 // 드롭다운에 노출할 필터 (요약 카드 3종 + 세부 상태)
 const STATUS_OPTIONS: StatusFilter[] = [
   'GATE_INFLOW',
@@ -129,14 +117,10 @@ export function InspectionTable({
           i.damage_summary.toLowerCase().includes(q)
         )
       })
-      .sort((a, b) => {
-        // Manual review first, then random audit, then the rest.
-        if (STATUS_PRIORITY[a.review_status] !== STATUS_PRIORITY[b.review_status]) {
-          return STATUS_PRIORITY[a.review_status] - STATUS_PRIORITY[b.review_status]
-        }
-        if (b.risk_score !== a.risk_score) return b.risk_score - a.risk_score
-        return new Date(b.captured_at).getTime() - new Date(a.captured_at).getTime()
-      })
+      .sort(
+        (a, b) =>
+          new Date(a.captured_at).getTime() - new Date(b.captured_at).getTime(),
+      )
   }, [inspections, query, statusFilter, risk])
 
   return (
@@ -146,7 +130,7 @@ export function InspectionTable({
         <div>
           <h2 className="text-xl font-bold tracking-tight">검수 대기열</h2>
           <p className="mt-1 text-sm text-muted-foreground">
-            전체 {inspections.length}건 중 {rows.length}건 · 고위험 우선 정렬
+            전체 {inspections.length}건 중 {rows.length}건 · 촬영 시간순(선입순)
           </p>
         </div>
         <div className="flex flex-col gap-2 sm:flex-row sm:items-center">

@@ -701,14 +701,9 @@ def list_inspections(query: Dict[str, str]) -> Dict:
             _kick_analyzer_if_pending(eid, cloud)
 
     serialized = [_serialize_item(it, detail=False) for it in items]
-    # 고위험 우선
-    rank = {"HIGH": 0, "MEDIUM": 1, "LOW": 2}
+    # 촬영 시간 오름차순 — 먼저 들어온 건이 위 (화면 공통)
     serialized.sort(
-        key=lambda x: (
-            rank.get(str(x.get("riskLevel") or ""), 9),
-            -(x.get("riskScore") or 0),
-            x.get("capturedAt") or "",
-        )
+        key=lambda x: str(x.get("capturedAt") or x.get("captured_at") or ""),
     )
     return _response(200, {"items": serialized, "count": len(serialized)})
 
@@ -872,10 +867,13 @@ def review_inspection(event_id: str, body: Dict) -> Dict:
         note = str(memo).strip()
         edge = native.get("edge") or {}
         edge_detections = list(edge.get("edge_detections") or [])
+        cloud = native.get("cloud_analysis") or {}
+        cloud_detections = list(cloud.get("detections") or [])
 
         print(
             f"[review] reinspect sync start event_id={event_id} "
             f"s3://{bucket}/{resolved} note_len={len(note)} "
+            f"prior_cloud={len(cloud_detections)} prior_edge={len(edge_detections)} "
             f"model={settings.bedrock_model_id} region={settings.bedrock_region}"
         )
         try:
@@ -884,6 +882,7 @@ def review_inspection(event_id: str, body: Dict) -> Dict:
                 key=resolved,
                 reviewer_note=note,
                 edge_detections=edge_detections,
+                cloud_detections=cloud_detections,
                 reviewer=str(reviewer),
             )
         except Exception as exc:  # noqa: BLE001

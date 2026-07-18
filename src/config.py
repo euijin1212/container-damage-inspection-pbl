@@ -99,7 +99,7 @@ class Settings:
     type_weights: Dict[str, float] = field(
         default_factory=lambda: {
             DAMAGE_HOLE: _get_float("RISK_WEIGHT_HOLE", 1.0),
-            DAMAGE_DENT: _get_float("RISK_WEIGHT_DENT", 0.7),
+            DAMAGE_DENT: _get_float("RISK_WEIGHT_DENT", 0.85),
             DAMAGE_RUST: _get_float("RISK_WEIGHT_RUST", 0.35),
         }
     )

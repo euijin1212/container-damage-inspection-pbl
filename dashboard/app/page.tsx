@@ -7,20 +7,13 @@ import { SummaryCards } from '@/components/inspection/summary-cards'
 import { InspectionTable } from '@/components/inspection/inspection-table'
 import { InspectionDetail } from '@/components/inspection/inspection-detail'
 import { getInspection, listInspections, reviewInspection } from '@/lib/api'
-import type { Inspection, ReviewStatus } from '@/lib/inspection-types'
+import type { Inspection } from '@/lib/inspection-types'
 import type { StatusFilter } from '@/lib/status-filters'
 
 const POLLING_INTERVAL_MS = 3000
 
-const STATUS_PRIORITY: Record<ReviewStatus, number> = {
-  MANUAL_NEEDED: 0,
-  AUDIT_REQUIRED: 1,
-  PENDING_CLOUD_ANALYSIS: 2,
-  REPORT_PENDING: 3,
-  INFERENCE_FAILED: 4,
-  REPORT_CREATED: 5,
-  DONE: 6,
-  AUTO_OK: 7,
+function byCapturedAtAsc(a: Inspection, b: Inspection) {
+  return new Date(a.captured_at).getTime() - new Date(b.captured_at).getTime()
 }
 
 function mergeInspections(current: Inspection[], incoming: Inspection[]) {
@@ -49,7 +42,7 @@ function mergeInspections(current: Inspection[], incoming: Inspection[]) {
     })
   }
 
-  return Array.from(byId.values())
+  return Array.from(byId.values()).sort(byCapturedAtAsc)
 }
 
 export default function Page() {
@@ -84,13 +77,7 @@ export default function Page() {
             i.review_status !== 'PENDING_CLOUD_ANALYSIS' &&
             i.review_status !== 'INFERENCE_FAILED',
         )
-        .sort((a, b) => {
-          if (STATUS_PRIORITY[a.review_status] !== STATUS_PRIORITY[b.review_status]) {
-            return STATUS_PRIORITY[a.review_status] - STATUS_PRIORITY[b.review_status]
-          }
-          if (b.risk_score !== a.risk_score) return b.risk_score - a.risk_score
-          return new Date(b.captured_at).getTime() - new Date(a.captured_at).getTime()
-        }),
+        .sort(byCapturedAtAsc),
     [inspections],
   )
 

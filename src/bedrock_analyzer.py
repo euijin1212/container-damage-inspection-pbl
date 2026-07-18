@@ -12,7 +12,7 @@ import json
 import os
 import re
 from dataclasses import dataclass
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 import boto3
 
@@ -90,6 +90,12 @@ _PROMPT = """당신은 항만 컨테이너 외관 검수 전문가입니다.
 
 이미지에 표시된 기존 bounding box 구역만 분석하세요.
 새 구역을 만들지 말고, 표시된 박스 안의 손상 유형/정도만 판정하세요.
+
+병합 규칙(중요):
+- 네모(박스) 안·근처에서 유형(type)이 같고 위치가 가까우면 하나의 damages 로만 기록
+- 인접한 녹 패치·연속 함몰·근접 구멍은 쪼개지 말고 대표 1건으로 묶기
+- 묶을 때 severity 는 가장 높은 값, bbox_pct 는 합친 영역, note 는 대표 한 줄 요약
+
 각 damages[].note 규칙:
 - 한국어 한 줄, 마침표 없이 명사구·짧은 구로 끝냄
 - 구성: (색/대상 있으면) + 위치·부위 + 손상 양상(범위·형태·부가 징후)
@@ -100,8 +106,19 @@ JSON 외 설명 문장은 넣지 마세요.
 """
 
 _REINSPECT_PROMPT = """당신은 항만 컨테이너 외관 검수 전문가입니다.
-이 이미지는 화질이 개선된 재검수용 사진입니다. 전체 이미지를 다시 정밀 검수하세요.
-검수자 재검수 의견이 있으면 반드시 반영하여 누락·오탐을 교정하세요.
+이 이미지는 화질이 개선된 재검수용 사진입니다.
+검수자 재검수 의견이 있으면 반드시 반영하여 각 박스 안 판정을 교정하세요.
+
+중요 범위 제한:
+- 아래에 주어진 기존 bounding box 구역 안의 손상만 분석하세요.
+- 박스 밖의 영역은 무시하세요. 새 구역을 만들지 마세요.
+- 박스 안에 유의미한 손상이 없으면 그 박스는 damages 에 넣지 마세요.
+
+병합 규칙(초기 검수와 동일):
+- 네모 안·근처에서 유형(type)이 같고 위치가 가까우면 하나의 damages 로만 기록
+- 인접한 녹 패치·연속 함몰·근접 구멍은 쪼개지 말고 대표 1건으로 묶기
+- 묶을 때 severity 는 가장 높은 값, bbox_pct 는 합친 영역(또는 대표 박스), note 는 대표 한 줄
+- box_index 는 묶음에 포함된 대표(가장 심각한) 박스 번호를 쓰세요
 
 손상 유형은 반드시 다음 중 하나로 분류합니다:
 - "hole": 구멍/관통/천공
@@ -123,26 +140,21 @@ _REINSPECT_PROMPT = """당신은 항만 컨테이너 외관 검수 전문가입�
       "confidence": 0.0~1.0,
       "location": "상/중/하-좌/중/우 형식 (예: 하-우)",
       "note": "감지 결과 한 줄 요약. '위치/부위 + 손상 특징' 형식. 예: '녹색 컨테이너 하단부 광범위한 녹슬음과 부식, 페인트 박리'",
-      "bbox_pct": {"x": 0.0, "y": 0.0, "width": 10.0, "height": 10.0}
+      "bbox_pct": {"x": 0.0, "y": 0.0, "width": 10.0, "height": 10.0},
+      "box_index": 1
     }
   ]
 }
 
-bbox_pct 는 이미지 전체 대비 퍼센트(0~100)입니다.
-기존 박스에 묶이지 말고, 의견·화질 개선 결과를 바탕으로 실제 손상을 재감지하세요.
-
-병합 규칙(중요 — 과다 탐지 금지):
-- 같은 유형(type)이고 위치·구역이 가깝거나 겹치면 하나의 damages 항목으로만 기록
-- 인접한 녹 패치·연속 함몰·근접 구멍은 각각 쪼개지 말고 대표 1건으로 묶기
-- 전체 damages 는 가능하면 1~4건, 최대 5건
-- 묶을 때는 severity 는 가장 높은 값, bbox 는 전체 영역을 덮는 합집합
+bbox_pct / box_index 는 이미지 전체 대비 퍼센트(0~100)인 기존 구역 목록을 따릅니다.
+box_index 는 1부터 시작하는 기존 구역 번호입니다.
 
 각 damages[].note 규칙:
 - 한국어 한 줄, 마침표 없이 명사구·짧은 구로 끝냄
 - 구성: (색/대상 있으면) + 위치·부위 + 손상 양상(범위·형태·부가 징후)
 - 길이 25~45자 내외. 예: '측면 중앙 수직 골판 함몰과 도장 균열'
 - 판정 문장·권고·유형명만 나열 금지
-손상이 없으면 damages 는 [] , overall_judgment 에 근거를 적으세요.
+모든 박스에서 손상이 없으면 damages 는 [] 로 두세요.
 """
 
 
@@ -345,12 +357,111 @@ def _merge_two(a: DamageItem, b: DamageItem) -> DamageItem:
     )
 
 
+def _pct_box_from_raw(raw: dict) -> Optional[Dict[str, float]]:
+    bbox_pct = raw.get("bbox_pct") or raw.get("box")
+    if not isinstance(bbox_pct, dict):
+        return None
+    try:
+        x = float(bbox_pct.get("x", 0))
+        y = float(bbox_pct.get("y", 0))
+        w = float(bbox_pct.get("width", 0))
+        h = float(bbox_pct.get("height", 0))
+    except (TypeError, ValueError):
+        return None
+    if w <= 0 or h <= 0:
+        return None
+    return {"x": x, "y": y, "width": w, "height": h}
+
+
+def constrain_damages_to_prior_boxes(
+    payload: dict,
+    damages: List[DamageItem],
+    prior_boxes: List[Dict[str, float]],
+) -> List[DamageItem]:
+    """재검수 결과를 기존 bbox 에만 매핑. 박스 밖·신규 구역은 버린다."""
+    if not prior_boxes:
+        return merge_similar_damages(damages)
+
+    assigned: Dict[int, DamageItem] = {}
+    raw_list = list(payload.get("damages") or [])
+
+    for i, raw in enumerate(raw_list):
+        if not isinstance(raw, dict):
+            continue
+        dtype = _normalize_type(raw.get("type"))
+        if dtype is None:
+            continue
+
+        idx: Optional[int] = None
+        try:
+            bi = int(raw.get("box_index"))
+            if 1 <= bi <= len(prior_boxes):
+                idx = bi - 1
+        except (TypeError, ValueError):
+            pass
+
+        raw_box = _pct_box_from_raw(raw)
+        if idx is None and raw_box is not None:
+            best_j, best_iou = -1, 0.08
+            for j, pb in enumerate(prior_boxes):
+                iou = _box_iou(raw_box, pb)
+                if iou > best_iou:
+                    best_iou, best_j = iou, j
+            if best_j >= 0:
+                idx = best_j
+
+        if idx is None and i < len(prior_boxes):
+            idx = i
+
+        if idx is None or idx < 0 or idx >= len(prior_boxes):
+            continue
+
+        try:
+            confidence = float(raw.get("confidence", 1.0))
+        except (TypeError, ValueError):
+            confidence = 1.0
+        note = _normalize_note(raw.get("note") if isinstance(raw.get("note"), str) else None)
+        cand = DamageItem(
+            damage_type=dtype,
+            severity=_normalize_severity(raw.get("severity")),
+            confidence=confidence,
+            location=raw.get("location"),
+            note=note,
+            box=dict(prior_boxes[idx]),
+        )
+        prev = assigned.get(idx)
+        if prev is None or _SEV_RANK.get(cand.severity, 0) > _SEV_RANK.get(
+            prev.severity, 0
+        ):
+            assigned[idx] = cand
+
+    if assigned:
+        return [assigned[k] for k in sorted(assigned)]
+
+    # 모델이 좌표를 안 맞춘 경우: 파싱된 damages 를 순서대로 prior 에 스냅
+    out: List[DamageItem] = []
+    for i, d in enumerate(damages):
+        if i >= len(prior_boxes):
+            break
+        out.append(
+            DamageItem(
+                damage_type=d.damage_type,
+                severity=d.severity,
+                confidence=d.confidence,
+                location=d.location,
+                note=_normalize_note(d.note),
+                box=dict(prior_boxes[i]),
+            )
+        )
+    return out
+
+
 def merge_similar_damages(
     damages: List[DamageItem],
     *,
     max_items: int = 5,
 ) -> List[DamageItem]:
-    """같은 유형·가까운 위치 손상을 묶어 과다 탐지를 줄인다(재검수용)."""
+    """같은 유형·가까운 위치 손상을 묶는다(초기 검수·재검수 공통)."""
     if len(damages) <= 1:
         return list(damages)
 
@@ -467,21 +578,37 @@ class BedrockDamageAnalyzer:
         reviewer_note: Optional[str] = None,
         *,
         reinspect: bool = False,
+        prior_boxes: Optional[List[Dict[str, float]]] = None,
     ) -> AnalysisResult:
         """이미지 1장을 분석해 손상 목록 + 전체 판단 근거를 반환한다.
 
         reviewer_note 가 있으면 검수자 재검수 의견으로 프롬프트에 포함한다.
-        reinspect=True 이면 화질 개선본 기준 전체 재감지 프롬프트를 사용한다.
+        reinspect=True 이면 기존 bbox(prior_boxes) 안만 재판정한다.
         """
+        boxes = [b for b in (prior_boxes or []) if isinstance(b, dict)]
         base = _REINSPECT_PROMPT if reinspect else _PROMPT
         prompt = base
+        if reinspect and boxes:
+            lines = []
+            for i, b in enumerate(boxes, 1):
+                lines.append(
+                    f'{i}) {{"x": {b.get("x", 0)}, "y": {b.get("y", 0)}, '
+                    f'"width": {b.get("width", 0)}, "height": {b.get("height", 0)}}}'
+                )
+            prompt = (
+                f"{base}\n\n"
+                "=== 분석 대상 기존 bounding box (이미지 대비 %, 이 구역만) ===\n"
+                + "\n".join(lines)
+                + "\n위 구역 밖은 분석하지 마세요.\n"
+            )
         note = (reviewer_note or "").strip()
         if note:
             prompt = (
-                f"{base}\n\n"
+                f"{prompt}\n\n"
                 "=== 검수자 재검수 의견 (반드시 참고) ===\n"
                 f"{note}\n"
-                "위 의견을 반영해 손상 유형·정도·위치·근거와 overall_judgment 를 다시 작성하세요.\n"
+                "위 의견을 반영해 각 박스 안 손상의 유형·정도·요약만 다시 판정하세요. "
+                "박스 밖 손상은 기록하지 마세요.\n"
             )
 
         fmt = (image_format or "jpeg").lower()
@@ -509,14 +636,15 @@ class BedrockDamageAnalyzer:
         text = self._extract_text(response)
         payload = _extract_json(text)
         damages = _parse_damages(payload)
-        if reinspect:
-            # 유사 유형·근접 구역을 묶어 감지 결과 과다 표시 방지
-            damages = merge_similar_damages(damages)
-            for d in damages:
-                d.note = _normalize_note(d.note)
+        # 재검수: 기존 bbox 안으로 스냅한 뒤, 초기와 동일하게 유사·근접 병합
+        if reinspect and boxes:
+            damages = constrain_damages_to_prior_boxes(payload, damages, boxes)
+        damages = merge_similar_damages(damages)
+        for d in damages:
+            d.note = _normalize_note(d.note)
+        # 감지 결과·AI 판단 근거: 초기/재검수 동일 포맷
         return AnalysisResult(
             damages=damages,
-            # 병합 후 목록으로 판단 근거·요약 형식을 다시 맞춤
             judgment_basis=format_judgment_basis(damages)[:1200],
         )
 

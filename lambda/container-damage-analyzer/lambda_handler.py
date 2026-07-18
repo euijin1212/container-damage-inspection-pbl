@@ -34,6 +34,7 @@ for _p in (_HERE, os.path.abspath(os.path.join(_HERE, "..", ".."))):
 
 from src.bedrock_analyzer import BedrockDamageAnalyzer  # noqa: E402
 from src.config import settings  # noqa: E402
+from src.reinspect_runner import run_reinspect_analysis  # noqa: E402
 from src.risk_score import calculate_risk  # noqa: E402
 from src.s3_client import S3ImageStore, _IMAGE_EXTS  # noqa: E402
 
@@ -590,18 +591,28 @@ def _mark_reinspect_pending(event_id: str, reviewer_note: str) -> None:
 
 
 def _process_reinspect(event_id: str, reviewer_note: str = "") -> Dict:
-    """대시보드 재검수: 기존 이미지로 Foundation Model 재분석."""
+    """재검수: 기존 bbox 안만 화질개선·재판정 후 DynamoDB 갱신."""
     existing = _get_item(event_id)
     if not existing:
         raise ItemNotFoundError(f"event_id={event_id} item이 DynamoDB에 없음")
 
     bucket, key = _resolve_image_location(existing)
+    key = _resolve_existing_image_key(bucket, key)
     note = (reviewer_note or "").strip()
+    edge = existing.get("edge") or {}
+    cloud = existing.get("cloud_analysis") or {}
     print(f"[재검수] event_id={event_id} note_len={len(note)} s3://{bucket}/{key}")
     _mark_reinspect_pending(event_id, note)
-    return _process_target(
-        bucket, key, event_id, force=True, reviewer_note=note, reinspect=True
+    fields = run_reinspect_analysis(
+        bucket=bucket,
+        key=key,
+        reviewer_note=note,
+        edge_detections=list(edge.get("edge_detections") or []),
+        cloud_detections=list(cloud.get("detections") or []),
+        reviewer="analyzer",
     )
+    ok = _update_dynamo(event_id, fields, require_pending=False)
+    return {"event_id": event_id, "updated": ok, **fields}
 
 
 def lambda_handler(event: Dict, context=None) -> Dict:

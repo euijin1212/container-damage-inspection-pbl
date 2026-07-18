@@ -71,6 +71,80 @@ def _pixel_bbox_to_pct(
     }
 
 
+def _normalize_pct_box(raw: Dict) -> Optional[Dict[str, float]]:
+    """cloud detection.box / bbox_pct → {x,y,width,height} %."""
+    try:
+        x = float(raw.get("x", 0))
+        y = float(raw.get("y", 0))
+        w = float(raw.get("width", 0))
+        h = float(raw.get("height", 0))
+    except (TypeError, ValueError):
+        return None
+    if w <= 0 or h <= 0:
+        return None
+    # 0~1 비율로 온 경우 % 로 변환
+    if x <= 1 and y <= 1 and w <= 1 and h <= 1:
+        x, y, w, h = x * 100.0, y * 100.0, w * 100.0, h * 100.0
+    return {
+        "x": round(x, 2),
+        "y": round(y, 2),
+        "width": round(w, 2),
+        "height": round(h, 2),
+    }
+
+
+def collect_prior_boxes(
+    *,
+    cloud_detections: Optional[List] = None,
+    edge_detections: Optional[List] = None,
+    img_w: Optional[int] = None,
+    img_h: Optional[int] = None,
+) -> List[Dict[str, float]]:
+    """재검수 시 분석할 기존 bbox 목록(이미지 대비 %).
+
+    대시보드에 보이는 cloud detections 를 우선하고, 없으면 edge YOLO bbox 사용.
+    """
+    boxes: List[Dict[str, float]] = []
+    seen = set()
+
+    def _add(box: Optional[Dict[str, float]]) -> None:
+        if not box:
+            return
+        key = (
+            round(box["x"], 1),
+            round(box["y"], 1),
+            round(box["width"], 1),
+            round(box["height"], 1),
+        )
+        if key in seen:
+            return
+        seen.add(key)
+        boxes.append(box)
+
+    for d in cloud_detections or []:
+        if not isinstance(d, dict):
+            continue
+        pct = None
+        if isinstance(d.get("box"), dict):
+            pct = _normalize_pct_box(d["box"])
+        elif isinstance(d.get("bbox_pct"), dict):
+            pct = _normalize_pct_box(d["bbox_pct"])
+        elif isinstance(d.get("bbox"), dict):
+            pct = _pixel_bbox_to_pct(d["bbox"], img_w, img_h)
+        _add(pct)
+
+    if boxes:
+        return boxes
+
+    for d in edge_detections or []:
+        if not isinstance(d, dict):
+            continue
+        bbox = d.get("bbox")
+        if isinstance(bbox, dict):
+            _add(_pixel_bbox_to_pct(bbox, img_w, img_h))
+    return boxes
+
+
 def _event_id_from_key(key: str) -> str:
     stem = key.rsplit("/", 1)[-1]
     return stem.rsplit(".", 1)[0] or "unknown"
@@ -257,14 +331,25 @@ def run_reinspect_analysis(
     key: str,
     reviewer_note: str = "",
     edge_detections: Optional[List] = None,
+    cloud_detections: Optional[List] = None,
     reviewer: str = "dashboard",
 ) -> Dict[str, Any]:
-    """화질 개선 → 검수 의견 포함 재감지 → DynamoDB 갱신 필드."""
+    """화질 개선 → 기존 bbox 안만 재판정 → DynamoDB 갱신 필드."""
     image = _store.download_from(bucket, key)
     print(
         f"[reinspect] download s3://{bucket}/{key} bytes={len(image.body)} "
         f"fmt={image.image_format}"
     )
+
+    # prior box 는 원본 해상도 기준으로 수집 (edge 픽셀 bbox 변환용)
+    src_w, src_h = _image_size(image.body, image.image_format)
+    prior_boxes = collect_prior_boxes(
+        cloud_detections=cloud_detections,
+        edge_detections=edge_detections,
+        img_w=src_w,
+        img_h=src_h,
+    )
+    print(f"[reinspect] prior_boxes={len(prior_boxes)} (bbox 내부만 분석)")
 
     enhanced = _enhancer.enhance(image.body)
     analyze_bytes = enhanced.body
@@ -291,6 +376,7 @@ def run_reinspect_analysis(
         analyze_fmt,
         reviewer_note=reviewer_note or None,
         reinspect=True,
+        prior_boxes=prior_boxes,
     )
     damages = analysis.damages
     risk = calculate_risk(damages)
