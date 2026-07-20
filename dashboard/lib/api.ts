@@ -312,25 +312,39 @@ export async function listInspections(opts?: {
     }
   }
 
+  const isRealUrl = (url?: string) =>
+    Boolean(url && url !== '/placeholder.svg' && !url.startsWith('/containers/'))
+
   let items = Array.from(byId.values())
   items = await Promise.all(
     items.map(async (item) => {
       const prev = kept.get(item.event_id)
-      const prevUrl = prev?.raw_image_url
-      if (prevUrl && prevUrl !== '/placeholder.svg' && !prevUrl.startsWith('/containers/')) {
+      // 목록 API 가 새 Presigned URL 을 주면 그걸 우선 (만료된 옛 URL 재사용 금지)
+      if (isRealUrl(item.raw_image_url)) {
         return {
           ...item,
-          raw_image_url: prevUrl,
-          image_s3_url: prev.image_s3_url || prevUrl,
-          annotated_s3_url: prev.annotated_s3_url,
-          detections: prev.detections.length > 0 ? prev.detections : item.detections,
-          ai_summary: item.ai_summary || prev.ai_summary,
-          verdict: item.verdict || prev.verdict,
-          ocr: prev.ocr,
+          detections:
+            item.detections.length > 0
+              ? item.detections
+              : prev?.detections?.length
+                ? prev.detections
+                : item.detections,
+          annotated_s3_url: item.annotated_s3_url || prev?.annotated_s3_url,
+          ocr: item.ocr || prev?.ocr,
         }
       }
-      if (item.raw_image_url && item.raw_image_url !== '/placeholder.svg') {
-        return item
+      // 목록에 이미지 없을 때만 이전 URL / 상세 조회로 보완
+      if (isRealUrl(prev?.raw_image_url)) {
+        return {
+          ...item,
+          raw_image_url: prev!.raw_image_url,
+          image_s3_url: prev!.image_s3_url || prev!.raw_image_url,
+          annotated_s3_url: prev!.annotated_s3_url,
+          detections: prev!.detections.length > 0 ? prev!.detections : item.detections,
+          ai_summary: item.ai_summary || prev!.ai_summary,
+          verdict: item.verdict || prev!.verdict,
+          ocr: prev!.ocr,
+        }
       }
       try {
         return await getInspection(item.event_id)
