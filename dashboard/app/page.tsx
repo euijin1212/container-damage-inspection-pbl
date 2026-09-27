@@ -10,7 +10,7 @@ import { getInspection, listInspections, reviewInspection } from '@/lib/api'
 import type { Inspection } from '@/lib/inspection-types'
 import type { StatusFilter } from '@/lib/status-filters'
 
-const POLLING_INTERVAL_MS = 3000
+const POLLING_INTERVAL_MS = 5000
 
 function byCapturedAtAsc(a: Inspection, b: Inspection) {
   return new Date(a.captured_at).getTime() - new Date(b.captured_at).getTime()

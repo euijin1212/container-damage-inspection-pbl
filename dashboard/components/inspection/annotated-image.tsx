@@ -80,6 +80,12 @@ export function AnnotatedImage({
           alt={alt}
           className="pointer-events-none size-full object-cover"
           draggable={false}
+          referrerPolicy="no-referrer"
+          onError={(e) => {
+            const el = e.currentTarget
+            if (el.src.includes('placeholder')) return
+            el.src = '/placeholder.svg'
+          }}
         />
       </button>
 

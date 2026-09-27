@@ -217,6 +217,12 @@ export function InspectionTable({
                         src={getInspectionImage(i)}
                         alt={`${i.container_id} 검수 썸네일`}
                         className="size-full object-cover"
+                        referrerPolicy="no-referrer"
+                        onError={(e) => {
+                          const el = e.currentTarget
+                          if (el.src.includes('placeholder')) return
+                          el.src = '/placeholder.svg'
+                        }}
                       />
                     </div>
                   </TableCell>
