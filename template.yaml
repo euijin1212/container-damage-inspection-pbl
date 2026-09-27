@@ -1,0 +1,372 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: SEINTU container damage inspection serverless backend
+
+Parameters:
+  AllowedOrigin:
+    Type: String
+    Default: http://localhost:3000
+    Description: Dashboard origin allowed by API Gateway and S3 CORS.
+  BedrockModelId:
+    Type: String
+    Default: apac.anthropic.claude-sonnet-4-5-20250929-v1:0
+  BedrockImageModelId:
+    Type: String
+    Default: amazon.nova-canvas-v1:0
+  BedrockImageRegion:
+    Type: String
+    Default: us-east-1
+  KnowledgeBaseId:
+    Type: String
+    Default: ''
+    Description: Optional Bedrock Knowledge Base ID for report generation.
+  LogRetentionDays:
+    Type: Number
+    Default: 14
+    AllowedValues: [1, 3, 5, 7, 14, 30, 60, 90]
+
+Globals:
+  Function:
+    Runtime: python3.12
+    Architectures: [x86_64]
+    Tracing: Active
+    Environment:
+      Variables:
+        AWS_REGION_NAME: !Ref AWS::Region
+        DDB_TABLE: !Ref InspectionEventTable
+        S3_BUCKET: !Sub ${AWS::StackName}-${AWS::AccountId}-${AWS::Region}-data
+        BEDROCK_REGION: !Ref AWS::Region
+        BEDROCK_MODEL_ID: !Ref BedrockModelId
+        BEDROCK_IMAGE_MODEL_ID: !Ref BedrockImageModelId
+        BEDROCK_IMAGE_REGION: !Ref BedrockImageRegion
+        KNOWLEDGE_BASE_ID: !Ref KnowledgeBaseId
+        RISK_THRESHOLD_HIGH: '66'
+        RISK_THRESHOLD_MEDIUM: '33'
+        RISK_WEIGHT_HOLE: '1.0'
+        RISK_WEIGHT_DENT: '0.7'
+        RISK_WEIGHT_RUST: '0.3'
+
+Resources:
+  InspectionHttpApi:
+    Type: AWS::Serverless::HttpApi
+    Properties:
+      CorsConfiguration:
+        AllowOrigins:
+          - !Ref AllowedOrigin
+        AllowHeaders:
+          - Content-Type
+          - Authorization
+        AllowMethods:
+          - GET
+          - POST
+          - OPTIONS
+        MaxAge: 600
+      DefaultRouteSettings:
+        ThrottlingBurstLimit: 50
+        ThrottlingRateLimit: 25
+
+  InspectionBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BucketName: !Sub ${AWS::StackName}-${AWS::AccountId}-${AWS::Region}-data
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      OwnershipControls:
+        Rules:
+          - ObjectOwnership: BucketOwnerEnforced
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      VersioningConfiguration:
+        Status: Enabled
+      CorsConfiguration:
+        CorsRules:
+          - AllowedHeaders: ['*']
+            AllowedMethods: [GET, PUT, HEAD]
+            AllowedOrigins:
+              - !Ref AllowedOrigin
+            ExposedHeaders: [ETag]
+            MaxAge: 3600
+
+  InspectionEventTable:
+    Type: AWS::DynamoDB::Table
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: event_id
+          AttributeType: S
+        - AttributeName: review_status
+          AttributeType: S
+        - AttributeName: event_date
+          AttributeType: S
+      KeySchema:
+        - AttributeName: event_id
+          KeyType: HASH
+      GlobalSecondaryIndexes:
+        - IndexName: ReviewStatusIndex
+          KeySchema:
+            - AttributeName: review_status
+              KeyType: HASH
+            - AttributeName: event_date
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
+      SSESpecification:
+        SSEEnabled: true
+      StreamSpecification:
+        StreamViewType: NEW_AND_OLD_IMAGES
+
+  HighRiskAlertTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: !Sub ${AWS::StackName}-high-risk-alerts
+
+  InspectionEventIngestFunction:
+    Type: AWS::Serverless::Function
+    Metadata:
+      BuildMethod: makefile
+    Properties:
+      FunctionName: !Sub ${AWS::StackName}-inspection-event-ingest
+      CodeUri: .
+      Handler: handler.lambda_handler
+      MemorySize: 256
+      Timeout: 15
+      Environment:
+        Variables:
+          UPLOAD_EXPIRES: '900'
+          CORS_ORIGIN: !Ref AllowedOrigin
+      Policies:
+        - Statement:
+            - Effect: Allow
+              Action:
+                - dynamodb:PutItem
+                - dynamodb:GetItem
+              Resource: !GetAtt InspectionEventTable.Arn
+            - Effect: Allow
+              Action:
+                - s3:PutObject
+                - s3:GetObject
+              Resource: !Sub arn:${AWS::Partition}:s3:::${AWS::StackName}-${AWS::AccountId}-${AWS::Region}-data/raw-images/*
+      Events:
+        IngestRoute:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref InspectionHttpApi
+            Method: POST
+            Path: /inspection-events
+
+  ContainerDamageAnalyzerFunction:
+    Type: AWS::Serverless::Function
+    Metadata:
+      BuildMethod: makefile
+    Properties:
+      FunctionName: !Sub ${AWS::StackName}-container-damage-analyzer
+      CodeUri: .
+      Handler: lambda_handler.lambda_handler
+      MemorySize: 1024
+      Timeout: 120
+      Environment:
+        Variables:
+          BEDROCK_READ_TIMEOUT: '55'
+          SNS_TOPIC_ARN: !Ref HighRiskAlertTopic
+          RISK_ALERT_LEVEL: HIGH
+      Policies:
+        - Statement:
+            - Effect: Allow
+              Action:
+                - dynamodb:GetItem
+                - dynamodb:UpdateItem
+              Resource: !GetAtt InspectionEventTable.Arn
+            - Effect: Allow
+              Action: s3:GetObject
+              Resource: !Sub arn:${AWS::Partition}:s3:::${AWS::StackName}-${AWS::AccountId}-${AWS::Region}-data/raw-images/*
+            - Effect: Allow
+              Action:
+                - bedrock:InvokeModel
+                - bedrock:InvokeModelWithResponseStream
+              Resource: '*'
+            - Effect: Allow
+              Action: sns:Publish
+              Resource: !Ref HighRiskAlertTopic
+      Events:
+        RawImageCreated:
+          Type: S3
+          Properties:
+            Bucket: !Ref InspectionBucket
+            Events: s3:ObjectCreated:*
+            Filter:
+              S3Key:
+                Rules:
+                  - Name: prefix
+                    Value: raw-images/
+
+  DashboardApiFunction:
+    Type: AWS::Serverless::Function
+    Metadata:
+      BuildMethod: makefile
+    Properties:
+      FunctionName: !Sub ${AWS::StackName}-dashboard-api
+      CodeUri: .
+      Handler: handler.lambda_handler
+      MemorySize: 1024
+      Timeout: 120
+      Environment:
+        Variables:
+          REVIEW_STATUS_INDEX: ReviewStatusIndex
+          PRESIGN_EXPIRES: '3600'
+          CORS_ORIGIN: !Ref AllowedOrigin
+          ANALYZER_FUNCTION_NAME: !Ref ContainerDamageAnalyzerFunction
+          REPORT_FUNCTION_NAME: !Ref ReportGeneratorFunction
+      Policies:
+        - Statement:
+            - Effect: Allow
+              Action:
+                - dynamodb:GetItem
+                - dynamodb:Query
+                - dynamodb:Scan
+                - dynamodb:UpdateItem
+                - dynamodb:DeleteItem
+              Resource:
+                - !GetAtt InspectionEventTable.Arn
+                - !Sub ${InspectionEventTable.Arn}/index/*
+            - Effect: Allow
+              Action: s3:ListBucket
+              Resource: !GetAtt InspectionBucket.Arn
+            - Effect: Allow
+              Action:
+                - s3:GetObject
+                - s3:PutObject
+                - s3:DeleteObject
+              Resource: !Sub ${InspectionBucket.Arn}/*
+            - Effect: Allow
+              Action:
+                - bedrock:InvokeModel
+                - bedrock:InvokeModelWithResponseStream
+              Resource: '*'
+            - Effect: Allow
+              Action: lambda:InvokeFunction
+              Resource:
+                - !GetAtt ContainerDamageAnalyzerFunction.Arn
+                - !GetAtt ReportGeneratorFunction.Arn
+      Events:
+        ListInspections:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref InspectionHttpApi
+            Method: GET
+            Path: /inspections
+        GetInspection:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref InspectionHttpApi
+            Method: GET
+            Path: /inspections/{event_id}
+        ReviewInspection:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref InspectionHttpApi
+            Method: POST
+            Path: /inspections/{event_id}/review
+        GetReport:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref InspectionHttpApi
+            Method: GET
+            Path: /inspections/{event_id}/report
+
+  ReportGeneratorFunction:
+    Type: AWS::Serverless::Function
+    Metadata:
+      BuildMethod: makefile
+    Properties:
+      FunctionName: !Sub ${AWS::StackName}-report-generator
+      CodeUri: .
+      Handler: handler.lambda_handler
+      MemorySize: 1024
+      Timeout: 180
+      Environment:
+        Variables:
+          REPORT_BUCKET: !Ref InspectionBucket
+          REPORT_PREFIX: reports/
+      Policies:
+        - Statement:
+            - Effect: Allow
+              Action:
+                - dynamodb:GetItem
+                - dynamodb:UpdateItem
+              Resource: !GetAtt InspectionEventTable.Arn
+            - Effect: Allow
+              Action:
+                - dynamodb:DescribeStream
+                - dynamodb:GetRecords
+                - dynamodb:GetShardIterator
+                - dynamodb:ListStreams
+              Resource: !GetAtt InspectionEventTable.StreamArn
+            - Effect: Allow
+              Action: s3:PutObject
+              Resource: !Sub ${InspectionBucket.Arn}/reports/*
+            - Effect: Allow
+              Action:
+                - bedrock:InvokeModel
+                - bedrock:InvokeModelWithResponseStream
+                - bedrock-agent-runtime:Retrieve
+              Resource: '*'
+      Events:
+        ReviewCompleted:
+          Type: DynamoDB
+          Properties:
+            Stream: !GetAtt InspectionEventTable.StreamArn
+            StartingPosition: LATEST
+            BatchSize: 10
+            MaximumBatchingWindowInSeconds: 2
+            MaximumRetryAttempts: 2
+            BisectBatchOnFunctionError: true
+
+  InspectionEventIngestLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /aws/lambda/${InspectionEventIngestFunction}
+      RetentionInDays: !Ref LogRetentionDays
+
+  ContainerDamageAnalyzerLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /aws/lambda/${ContainerDamageAnalyzerFunction}
+      RetentionInDays: !Ref LogRetentionDays
+
+  DashboardApiLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /aws/lambda/${DashboardApiFunction}
+      RetentionInDays: !Ref LogRetentionDays
+
+  ReportGeneratorLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /aws/lambda/${ReportGeneratorFunction}
+      RetentionInDays: !Ref LogRetentionDays
+
+Outputs:
+  ApiBaseUrl:
+    Description: Set this value as NEXT_PUBLIC_API_BASE and INGEST_API_URL.
+    Value: !Sub https://${InspectionHttpApi}.execute-api.${AWS::Region}.${AWS::URLSuffix}
+  DataBucket:
+    Value: !Ref InspectionBucket
+  InspectionTable:
+    Value: !Ref InspectionEventTable
+  AnalyzerFunctionName:
+    Value: !Ref ContainerDamageAnalyzerFunction
+  ReportFunctionName:
+    Value: !Ref ReportGeneratorFunction
+  HighRiskAlertTopicArn:
+    Value: !Ref HighRiskAlertTopic
