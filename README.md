@@ -116,6 +116,16 @@ API는 검사 event 접수용 `POST /inspection-events`와 대시보드 조회·
 | Demo mode in dashboard | AWS 계정이나 배포 상태와 무관하게 포트폴리오 검수가 가능하도록 샘플 데이터를 포함했습니다. |
 | Serverless infrastructure with SAM | 서버리스 리소스를 콘솔 설정이 아니라 `template.yaml`로 재배포할 수 있게 했습니다. |
 
+## Development Process
+
+초기 기획에서는 단일 Cloud 모델을 고려했지만, 전송량과 추론 비용을 고려해 Edge YOLO 선별과 Cloud 상세 분석으로 역할을 나눴습니다.
+Git에 남은 첫 설계는 이미 Edge-first이며, 이후 Cloud 분석과 Dashboard 검수·보고서 기능을 연결했습니다.
+이벤트 metadata는 API Gateway로 접수하고, 이미지는 presigned URL로 S3에 직접 전송하도록 경로를 분리했습니다.
+LOW 자동 확정을 제거해 모든 분석 성공 건을 검사자가 확인하도록 변경했습니다.
+재검수는 처음부터 Nova Canvas 보정 후 전체 이미지 재분석으로 구현됐고, 이후 기존 bbox 중심의 재판정으로 제한했습니다.
+중복 이벤트, Risk Score, 이미지 URL과 실패 복구 경로도 보완했습니다. 측정하지 않은 비용·성능 개선 수치는 제시하지 않습니다.
+커밋 근거와 현재 구현의 한계는 [Development Process](docs/development-process.md)에서 확인할 수 있습니다.
+
 ## 7. Tech Stack
 
 | Area | Stack |
